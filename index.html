@@ -90,9 +90,14 @@
         .orbital-button:active {
             transform: translateY(0);
         }
-        .orbital-button.active {
-            background-color: #ffffff;
-            color: #333333;
+        .orbital-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            background-color: #555555;
+        }
+        .orbital-button:disabled:hover {
+            transform: none;
+            background-color: #555555;
         }
         .slider-container {
             display: flex;
@@ -161,8 +166,10 @@
                 </div>
                 <button id="adaptive-toggle" class="orbital-button">Adaptive Off</button>
                 <button id="mode-toggle" class="orbital-button">Mode: Instanced</button>
+                <button id="impostor-toggle" class="orbital-button">Impostor: Off</button>
                 <button id="cull-toggle" class="orbital-button">Cull: Off</button>
                 <button id="pause-toggle" class="orbital-button">Pause</button>
+                <button id="clear-button" class="orbital-button">Clear</button>
             </div>
             <div id="fps-counter"> FPS:0 </div>
         </div>
@@ -218,6 +225,7 @@
             let renderMode = 'instanced'; // 'instanced' or 'points'
             // renderMode can also be 'gpu' for GPU-based sampling + point-cloud shader
             let occlusionEnabled = false; // toggles depth-based occlusion culling
+            let impostorEnabled = false; // toggles impostor rendering for instanced mode (billboard quads instead of spheres)
             // Points mode reusable buffers
             let pointsCache = { geometry: null, material: null, capacity: 0 };
             const maxRadius = 30;
@@ -381,6 +389,91 @@
 
             // Render a fullscreen quad into the sample target. Fragment shader generates
             // random samples (r,theta,phi), computes position and psi, and writes (x,y,z,psi)
+            // Update the GPU sampling fragment shader to fix potential issues:
+            // - Ensure rejection loop always produces a sample (fallback to uniform sampling if needed)
+            // - Improve random function for better distribution
+            // - Add debug output for shader compilation
+            const gpuSampleFragShader = `
+uniform float uN, uL, uM;
+uniform sampler2D uRadialLUT;
+uniform float uLUTSize, uMaxPsi2, uNumPoints;
+uniform vec2 uResolution;
+uniform float uSeed;
+
+float random(vec2 st) {
+    return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
+}
+
+vec3 sphericalToCartesian(float r, float theta, float phi) {
+    return vec3(r * sin(theta) * cos(phi), r * sin(theta) * sin(phi), r * cos(theta));
+}
+
+float getRadial(float r, float n, float l) {
+    float x = 2.0 * r / n;
+    vec2 texCoord = vec2((x / 10.0), 0.0);
+    return texture(uRadialLUT, texCoord).r;
+}
+
+float getAngular(float theta, float phi, float l, float m) {
+    if (l == 0.0) return 1.0;
+    else if (l == 1.0) {
+        if (m == 0.0) return cos(theta);
+        else if (m == 1.0) return sin(theta) * cos(phi);
+        else return sin(theta) * sin(phi);
+    } else if (l == 2.0) {
+        float ct = cos(theta), st = sin(theta);
+        if (m == 0.0) return 1.5 * ct * ct - 0.5;
+        else if (m == 1.0) return -1.732 * st * ct * cos(phi);
+        else if (m == -1.0) return 1.732 * st * ct * sin(phi);
+        else if (m == 2.0) return 0.866 * st * st * cos(2.0 * phi);
+        else return 0.866 * st * st * sin(2.0 * phi);
+    }
+    return 0.0;
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / uResolution;
+    float idx = uv.x * uNumPoints;
+    if (idx >= uNumPoints) discard;
+
+    vec2 seed = uv + uSeed;
+    float psi = 0.0;
+    vec3 pos = vec3(0.0);
+    bool found = false;
+
+    // Rejection sampling loop with fallback
+    for (int attempt = 0; attempt < 100; attempt++) {
+        float r = random(seed) * 30.0;
+        float theta = acos(2.0 * random(seed + 1.0) - 1.0);
+        float phi = random(seed + 2.0) * 6.283185;
+        seed += 3.0;
+
+        float radial = getRadial(r, uN, uL);
+        float angular = getAngular(theta, phi, uL, uM);
+        psi = radial * angular;
+        float psi2 = psi * psi;
+
+        if (random(seed) < psi2 / uMaxPsi2) {
+            pos = sphericalToCartesian(r, theta, phi);
+            found = true;
+            break;
+        }
+    }
+
+    // Fallback: uniform sampling if rejection fails
+    if (!found) {
+        float r = random(seed) * 30.0;
+        float theta = acos(2.0 * random(seed + 1.0) - 1.0);
+        float phi = random(seed + 2.0) * 6.283185;
+        pos = sphericalToCartesian(r, theta, phi);
+        psi = getRadial(r, uN, uL) * getAngular(theta, phi, uL, uM);
+    }
+
+    gl_FragColor = vec4(pos, psi);
+}
+`;
+
+            // Update renderGPUSamples to log shader compilation errors
             function renderGPUSamples(n, l, m, numPoints) {
                 // Ensure LUT exists for current n,l (cache per n,l)
                 const lutKey = `${n}_${l}`;
@@ -406,14 +499,15 @@
                 const quadGeom = new THREE.PlaneBufferGeometry(2, 2);
                 const quadMat = new THREE.ShaderMaterial({
                     uniforms: {
-                        uResolution: { value: new THREE.Vector2(width, height) },
+                        uN: { value: n },
+                        uL: { value: l },
+                        uM: { value: m },
+                        uRadialLUT: { value: radialLUTCache[`${n}_${l}`] },
+                        uLUTSize: { value: 256 },
+                        uMaxPsi2: { value: estimateMaxPsi2(n, l, m) }, // precompute max |psi|^2
                         uNumPoints: { value: numPoints },
-                        uMaxRadius: { value: maxRadius },
-                        uLUT: { value: gpuRadialLUT },
-                        uLUTSize: { value: gpuLUTSize },
-                        uSeed: { value: Math.random() * 43758.5453123 },
-                        uLf: { value: n },
-                        uMf: { value: m }
+                        uResolution: { value: new THREE.Vector2(gpuSampleTarget.width, gpuSampleTarget.height) },
+                        uSeed: { value: Math.random() }
                     },
                     vertexShader: `
                         varying vec2 vUv;
@@ -422,80 +516,19 @@
                             gl_Position = vec4(position, 1.0);
                         }
                     `,
-                    fragmentShader: `
-                        precision highp float;
-                        varying vec2 vUv;
-                        uniform vec2 uResolution;
-                        uniform float uNumPoints;
-                        uniform float uMaxRadius;
-                        uniform sampler2D uLUT;
-                        uniform float uLUTSize;
-                        uniform float uSeed;
-                        uniform float uLf;
-                        uniform float uMf;
-
-                        // simple hash RNG
-                        float hash(vec2 p) {
-                            p = fract(p * vec2(123.34, 456.21));
-                            p += dot(p, p + 45.32);
-                            return fract(p.x * p.y);
-                        }
-
-                        float rand(vec2 co){
-                            return hash(co + uSeed);
-                        }
-
-                        // sample radial LUT (r in [0, uMaxRadius])
-                        float sampleRadial(float r) {
-                            float t = clamp(r / uMaxRadius, 0.0, 1.0);
-                            float idx = t * (uLUTSize - 1.0);
-                            float x = (floor(idx) + 0.5) / uLUTSize;
-                            return texture2D(uLUT, vec2(x, 0.5)).r;
-                        }
-
-                        void main() {
-                            vec2 frag = gl_FragCoord.xy - vec2(0.5);
-                            vec2 seed = frag + vUv * uSeed;
-                            float rx = rand(seed + 0.13);
-                            float ry = rand(seed + 1.37);
-                            float rz = rand(seed + 2.71);
-                            float r = rx * uMaxRadius;
-                            float theta = acos(2.0 * ry - 1.0);
-                            float phi = 2.0 * 3.141592653589793 * rz;
-                            float st = sin(theta);
-                            float ct = cos(theta);
-                            float cp = cos(phi);
-                            float sp = sin(phi);
-                            float x = r * st * cp;
-                            float y = r * st * sp;
-                            float z = r * ct;
-                            float radial = sampleRadial(r);
-                            // compute angular part from Cartesian coordinates for stability
-                            float ang = 1.0;
-                            float rr = max(r, 1e-6);
-                            float nx = x / rr;
-                            float ny = y / rr;
-                            float nz = z / rr;
-                            if (abs(uLf - 0.0) < 0.5) {
-                                ang = 1.0;
-                            } else if (abs(uLf - 1.0) < 0.5) {
-                                if (abs(uMf - 0.0) < 0.5) ang = nz; // p_z
-                                else if (abs(uMf - 1.0) < 0.5) ang = nx; // p_x
-                                else if (abs(uMf - -1.0) < 0.5) ang = ny; // p_y
-                            } else if (abs(uLf - 2.0) < 0.5) {
-                                if (abs(uMf - 0.0) < 0.5) ang = (3.0 * nz * nz - 1.0); // d_z2
-                                else if (abs(uMf - 1.0) < 0.5) ang = nx * nz; // d_xz (unnormalized)
-                                else if (abs(uMf - -1.0) < 0.5) ang = ny * nz; // d_yz
-                                else if (abs(uMf - 2.0) < 0.5) ang = (nx * nx - ny * ny); // d_x2-y2
-                                else if (abs(uMf - -2.0) < 0.5) ang = (2.0 * nx * ny); // d_xy
-                            }
-                            float psi = radial * ang;
-                            gl_FragColor = vec4(x, y, z, psi);
-                        }
-                    `,
-                    depthTest: false,
-                    depthWrite: false
+                    fragmentShader: gpuSampleFragShader // updated
                 });
+
+                // After creating quadMat, check for compilation errors
+                if (quadMat.program) {
+                    const gl = renderer.getContext();
+                    const program = quadMat.program.program;
+                    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                        console.error('Shader link error:', gl.getProgramInfoLog(program));
+                    }
+                    const fragLog = gl.getShaderInfoLog(quadMat.program.fragmentShader);
+                    if (fragLog) console.error('Fragment shader compile error:', fragLog);
+                }
 
                 const quad = new THREE.Mesh(quadGeom, quadMat);
                 gpuQuadScene.add(quad);
@@ -532,7 +565,7 @@
                     uniforms: {
                         uSamples: { value: sampleTarget.texture },
                         uTexSize: { value: new THREE.Vector2(width, height) },
-                        uPointSize: { value: 3.0 },
+                        uPointSize: { value: 0.3 },
                         uColorPos: { value: colorPositive },
                         uColorNeg: { value: colorNegative }
                     },
@@ -576,6 +609,8 @@
                 });
 
                 const points = new THREE.Points(geom, mat);
+                points.userData = points.userData || {};
+                points.userData.isOrbital = true;
                 return points;
             }
 
@@ -584,20 +619,23 @@
                 const { n, l, m } = currentOrbitalData;
                 const numPoints = parseInt(densitySlider.value);
 
-                // Remove old mesh
-                if (currentOrbital) {
-                    scene.remove(currentOrbital);
-                    // If previous was a group, dispose its children
-                    if (currentOrbital.type === 'Group') {
-                        currentOrbital.children.forEach(child => {
+                // Remove any previous orbital objects from the scene (safe cleanup)
+                scene.children.slice().forEach(child => {
+                    if (child.userData && child.userData.isOrbital) {
+                        // dispose geometries/materials if present
+                        if (child.type === 'Group') {
+                            child.children.forEach(ch => {
+                                ch.geometry?.dispose?.();
+                                ch.material?.dispose?.();
+                            });
+                        } else {
                             child.geometry?.dispose?.();
                             child.material?.dispose?.();
-                        });
-                    } else {
-                        currentOrbital.geometry?.dispose?.();
-                        currentOrbital.material?.dispose?.();
+                        }
+                        scene.remove(child);
                     }
-                }
+                });
+                currentOrbital = null;
 
                 // Estimate max |psi|^2 for normalization (rejection sampling)
                 const maxPsi2 = estimateMaxPsi2(n, l, m);
@@ -616,6 +654,7 @@
                 // Geometry & materials (reuse by caching on function property)
                 if (!regenerateOrbitalGeometry._sphereGeo) {
                     regenerateOrbitalGeometry._sphereGeo = new THREE.SphereGeometry(0.12, 6, 6);
+                    regenerateOrbitalGeometry._quadGeo = new THREE.PlaneBufferGeometry(0.24, 0.24); // quad for impostors
                     const commonMatOpts = {
                         transparent: true,
                         opacity: 0.5,
@@ -625,15 +664,75 @@
                     };
                     regenerateOrbitalGeometry._matPos = new THREE.MeshBasicMaterial({ color: colorPositive, ...commonMatOpts });
                     regenerateOrbitalGeometry._matNeg = new THREE.MeshBasicMaterial({ color: colorNegative, ...commonMatOpts });
+                    
+                    // Billboard materials for impostors
+                    const billboardVertShader = `
+                        attribute vec3 instancePosition;
+                        attribute float instanceScale;
+                        varying vec3 vColor;
+                        uniform vec3 color;
+                        uniform mat4 modelViewMatrix;
+                        uniform mat4 projectionMatrix;
+                        uniform vec3 cameraPosition;
+                        
+                        void main() {
+                            vec3 pos = instancePosition;
+                            vec3 toCamera = normalize(cameraPosition - pos);
+                            vec3 up = vec3(0.0, 1.0, 0.0);
+                            vec3 right = normalize(cross(toCamera, up));
+                            up = cross(right, toCamera);
+                            
+                            vec3 vertex = position * instanceScale;
+                            vertex = right * vertex.x + up * vertex.y + toCamera * vertex.z;
+                            pos += vertex;
+                            
+                            gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+                            vColor = color;
+                        }
+                    `;
+                    const billboardFragShader = `
+                        varying vec3 vColor;
+                        void main() {
+                            gl_FragColor = vec4(vColor, 1.0);
+                        }
+                    `;
+                    
+                    regenerateOrbitalGeometry._matPosBillboard = new THREE.ShaderMaterial({
+                        uniforms: {
+                            color: { value: colorPositive },
+                            cameraPosition: { value: camera.position }
+                        },
+                        vertexShader: billboardVertShader,
+                        fragmentShader: billboardFragShader,
+                        transparent: true,
+                        depthWrite: !occlusionEnabled,
+                        depthTest: occlusionEnabled,
+                        blending: THREE.AdditiveBlending
+                    });
+                    
+                    regenerateOrbitalGeometry._matNegBillboard = new THREE.ShaderMaterial({
+                        uniforms: {
+                            color: { value: colorNegative },
+                            cameraPosition: { value: camera.position }
+                        },
+                        vertexShader: billboardVertShader,
+                        fragmentShader: billboardFragShader,
+                        transparent: true,
+                        depthWrite: !occlusionEnabled,
+                        depthTest: occlusionEnabled,
+                        blending: THREE.AdditiveBlending
+                    });
                 }
                 const sphereGeo = regenerateOrbitalGeometry._sphereGeo;
+                const quadGeo = regenerateOrbitalGeometry._quadGeo;
                 const matPos = regenerateOrbitalGeometry._matPos;
                 const matNeg = regenerateOrbitalGeometry._matNeg;
+                const matPosBillboard = regenerateOrbitalGeometry._matPosBillboard;
+                const matNegBillboard = regenerateOrbitalGeometry._matNegBillboard;
 
                 // Choose rendering path
                 if (renderMode === 'points') {
-                    // Remove old
-                    if (currentOrbital) { scene.remove(currentOrbital); currentOrbital = null; }
+                    // Remove old (already cleaned above)
                     // Ensure capacity
                     if (!pointsCache.geometry || pointsCache.capacity < numPoints) {
                         pointsCache.geometry?.dispose?.();
@@ -677,6 +776,8 @@
                     geom.getAttribute('position').needsUpdate = true;
                     geom.getAttribute('color').needsUpdate = true;
                     const points = new THREE.Points(geom, pointsCache.material);
+                    points.userData = points.userData || {};
+                    points.userData.isOrbital = true;
                     currentOrbital = points;
                     scene.add(points);
                     // store capacities
@@ -688,13 +789,19 @@
 
                 // GPU mode: render samples into a float texture then draw points that read from it
                 if (renderMode === 'gpu') {
-                    // Clean old
-                    if (currentOrbital) { scene.remove(currentOrbital); currentOrbital = null; }
+                    // Clean old (already cleaned above)
                     const rt = renderGPUSamples(n, l, m, numPoints);
                     // create GPU points mesh
                     gpuSampleTarget = rt;
-                    if (gpuSampleMesh) { gpuSampleMesh.geometry.dispose(); gpuSampleMesh.material.dispose(); scene.remove(gpuSampleMesh); gpuSampleMesh = null; }
+                    if (gpuSampleMesh) {
+                        gpuSampleMesh.geometry.dispose();
+                        gpuSampleMesh.material.dispose();
+                        scene.remove(gpuSampleMesh);
+                        gpuSampleMesh = null;
+                    }
                     gpuSampleMesh = createGPUPointsMesh(rt, numPoints);
+                    gpuSampleMesh.userData = gpuSampleMesh.userData || {};
+                    gpuSampleMesh.userData.isOrbital = true;
                     currentOrbital = gpuSampleMesh;
                     scene.add(gpuSampleMesh);
                     currentOrbital._lastConfig = { n, l, m, numPoints };
@@ -726,30 +833,67 @@
                     }
                 }
 
-                const posMesh = new THREE.InstancedMesh(sphereGeo, matPos, posTransforms.length || 1);
-                const negMesh = new THREE.InstancedMesh(sphereGeo, matNeg, negTransforms.length || 1);
-                posMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-                negMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+                // Choose geometry and materials based on impostor mode (only for instanced mode)
+                const useImpostor = impostorEnabled && renderMode === 'instanced';
+                const useGeo = useImpostor ? quadGeo : sphereGeo;
+                const useMatPos = useImpostor ? matPosBillboard : matPos;
+                const useMatNeg = useImpostor ? matNegBillboard : matNeg;
 
-                // Fill matrices
-                posTransforms.forEach((t, i) => {
-                    dummyObject3D.position.set(t.x, t.y, t.z);
-                    dummyObject3D.scale.setScalar(t.scale);
-                    dummyObject3D.updateMatrix();
-                    posMesh.setMatrixAt(i, dummyObject3D.matrix);
-                });
-                negTransforms.forEach((t, i) => {
-                    dummyObject3D.position.set(t.x, t.y, t.z);
-                    dummyObject3D.scale.setScalar(t.scale);
-                    dummyObject3D.updateMatrix();
-                    negMesh.setMatrixAt(i, dummyObject3D.matrix);
-                });
+                const posMesh = new THREE.InstancedMesh(useGeo, useMatPos, posTransforms.length || 1);
+                const negMesh = new THREE.InstancedMesh(useGeo, useMatNeg, negTransforms.length || 1);
+                // mark meshes so global cleanup will remove them when changing modes
+                posMesh.userData = posMesh.userData || {};
+                negMesh.userData = negMesh.userData || {};
+                posMesh.userData.isOrbital = true;
+                negMesh.userData.isOrbital = true;
+
+                // For impostors, add instance attributes for position and scale
+                if (useImpostor) {
+                    const posPositions = new Float32Array(posTransforms.length * 3);
+                    const posScales = new Float32Array(posTransforms.length);
+                    posTransforms.forEach((t, i) => {
+                        posPositions[i*3] = t.x;
+                        posPositions[i*3+1] = t.y;
+                        posPositions[i*3+2] = t.z;
+                        posScales[i] = t.scale;
+                    });
+                    posMesh.geometry.setAttribute('instancePosition', new THREE.InstancedBufferAttribute(posPositions, 3));
+                    posMesh.geometry.setAttribute('instanceScale', new THREE.InstancedBufferAttribute(posScales, 1));
+                    
+                    const negPositions = new Float32Array(negTransforms.length * 3);
+                    const negScales = new Float32Array(negTransforms.length);
+                    negTransforms.forEach((t, i) => {
+                        negPositions[i*3] = t.x;
+                        negPositions[i*3+1] = t.y;
+                        negPositions[i*3+2] = t.z;
+                        negScales[i] = t.scale;
+                    });
+                    negMesh.geometry.setAttribute('instancePosition', new THREE.InstancedBufferAttribute(negPositions, 3));
+                    negMesh.geometry.setAttribute('instanceScale', new THREE.InstancedBufferAttribute(negScales, 1));
+                } else {
+                    // For spheres, use the standard instance matrix approach
+                    posTransforms.forEach((t, i) => {
+                        dummyObject3D.position.set(t.x, t.y, t.z);
+                        dummyObject3D.scale.setScalar(t.scale);
+                        dummyObject3D.updateMatrix();
+                        posMesh.setMatrixAt(i, dummyObject3D.matrix);
+                    });
+                    negTransforms.forEach((t, i) => {
+                        dummyObject3D.position.set(t.x, t.y, t.z);
+                        dummyObject3D.scale.setScalar(t.scale);
+                        dummyObject3D.updateMatrix();
+                        negMesh.setMatrixAt(i, dummyObject3D.matrix);
+                    });
+                }
                 posMesh.instanceMatrix.needsUpdate = true;
                 negMesh.instanceMatrix.needsUpdate = true;
 
                 const group = new THREE.Group();
                 group.add(posMesh);
                 group.add(negMesh);
+                // mark group for cleanup as well
+                group.userData = group.userData || {};
+                group.userData.isOrbital = true;
                 currentOrbital = group;
                 scene.add(group);
                 // Store capacity metadata for in-place updates
@@ -773,16 +917,124 @@
                     const sameConfig = currentOrbital && currentOrbital._lastConfig && currentOrbital._lastConfig.n === n && currentOrbital._lastConfig.l === l && currentOrbital._lastConfig.m === m && currentOrbital._lastConfig.numPoints === desiredPoints;
                     const rt = renderGPUSamples(n, l, m, desiredPoints);
                     gpuSampleTarget = rt;
-                    if (gpuSampleMesh) {
-                        gpuSampleMesh.material.uniforms.uSamples.value = rt.texture;
-                        currentOrbital._lastConfig = { n, l, m, numPoints: desiredPoints };
-                    } else {
-                        // create mesh if missing
-                        gpuSampleMesh = createGPUPointsMesh(rt, desiredPoints);
-                        scene.add(gpuSampleMesh);
-                        currentOrbital = gpuSampleMesh;
-                        currentOrbital._lastConfig = { n, l, m, numPoints: desiredPoints };
+
+                    // Ensure old orbital objects are removed before adding/updating GPU mesh
+                    scene.children.slice().forEach(child => {
+                        if (child.userData && child.userData.isOrbital) {
+                            if (child !== gpuSampleMesh) {
+                                child.geometry?.dispose?.();
+                                child.material?.dispose?.();
+                                scene.remove(child);
+                            }
+                        }
+                    });
+
+                        if (gpuSampleMesh) {
+                            gpuSampleMesh.material.uniforms.uSamples.value = rt.texture;
+                            currentOrbital._lastConfig = { n, l, m, numPoints: desiredPoints };
+                        } else {
+                            // create mesh if missing
+                            gpuSampleMesh = createGPUPointsMesh(rt, desiredPoints);
+                            gpuSampleMesh.userData = gpuSampleMesh.userData || {};
+                            gpuSampleMesh.userData.isOrbital = true;
+                            scene.add(gpuSampleMesh);
+                            currentOrbital = gpuSampleMesh;
+                            currentOrbital._lastConfig = { n, l, m, numPoints: desiredPoints };
+                        }
+                        return;
                     }
+
+                // Points mode: resample the buffer geometry positions and colors
+                if (renderMode === 'points') {
+                    if (!currentOrbital || currentOrbital.type !== 'Points') return;
+                    const { n, l, m } = currentOrbitalData;
+                    const desiredPoints = parseInt(densitySlider.value);
+                    const sameConfig = currentOrbital._lastConfig && currentOrbital._lastConfig.n === n && currentOrbital._lastConfig.l === l && currentOrbital._lastConfig.m === m && currentOrbital._lastConfig.numPoints === desiredPoints;
+                    if (!sameConfig) {
+                        regenerateOrbitalGeometry();
+                        return;
+                    }
+                    
+                    const geom = currentOrbital.geometry;
+                    const posArr = geom.getAttribute('position').array;
+                    const colArr = geom.getAttribute('color').array;
+                    const numPoints = posArr.length / 3;
+                    
+                    if (!adaptiveEnabled) {
+                        // Full refresh for points mode
+                        const maxPsi2 = estimateMaxPsi2(n, l, m, Math.min(1200, Math.max(200, numPoints)));
+                        let written = 0, attempts = 0, MAX_ATTEMPTS = numPoints * 20;
+                        while (written < numPoints && attempts < MAX_ATTEMPTS) {
+                            attempts++;
+                            const r = Math.random() * maxRadius;
+                            const theta = Math.acos(2 * Math.random() - 1);
+                            const phi = Math.random() * 2 * Math.PI;
+                            const sinTheta = Math.sin(theta);
+                            const cosTheta = Math.cos(theta);
+                            const cosPhi = Math.cos(phi);
+                            const x = r * sinTheta * cosPhi;
+                            const y = r * sinTheta * Math.sin(phi);
+                            const z = r * cosTheta;
+                            const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
+                            const psi2 = psi * psi;
+                            if (Math.random() <= psi2 / maxPsi2) {
+                                const i = written * 3;
+                                posArr[i] = x; posArr[i+1] = y; posArr[i+2] = z;
+                                const c = psi >= 0 ? colorPositive : colorNegative;
+                                colArr[i] = c.r; colArr[i+1] = c.g; colArr[i+2] = c.b;
+                                written++;
+                            }
+                        }
+                        // Fill remaining with zeros (invisible points)
+                        for (let i = written; i < numPoints; i++) {
+                            const idx = i * 3;
+                            posArr[idx] = 0; posArr[idx+1] = 0; posArr[idx+2] = 0;
+                            colArr[idx] = 0; colArr[idx+1] = 0; colArr[idx+2] = 0;
+                        }
+                    } else {
+                        // Adaptive mode for points: update random subset
+                        if (!cachedMaxPsi2 || adaptiveFrame % ADAPTIVE_MAX_RECALC_INTERVAL === 0) {
+                            const fresh = estimateMaxPsi2(n, l, m, 600);
+                            if (emaMaxPsi2 == null) emaMaxPsi2 = fresh; else emaMaxPsi2 = EMA_ALPHA * fresh + (1 - EMA_ALPHA) * emaMaxPsi2;
+                            cachedMaxPsi2 = emaMaxPsi2;
+                        }
+                        const maxPsi2 = cachedMaxPsi2 || 1e-6;
+                        const updates = Math.max(1, Math.floor(numPoints * SUBSET_RESAMPLE_FRACTION));
+                        
+                        let attempts = 0, accepted = 0;
+                        for (let i = 0; i < updates; i++) {
+                            const idx = (Math.random() * numPoints) | 0;
+                            const ATTEMPT_LIMIT = 40;
+                            for (let a = 0; a < ATTEMPT_LIMIT; a++) {
+                                attempts++;
+                                const r = Math.random() * maxRadius;
+                                const theta = Math.acos(2 * Math.random() - 1);
+                                const phi = Math.random() * 2 * Math.PI;
+                                const sinTheta = Math.sin(theta);
+                                const cosTheta = Math.cos(theta);
+                                const cosPhi = Math.cos(phi);
+                                const sinPhi = Math.sin(phi);
+                                const x = r * sinTheta * cosPhi;
+                                const y = r * sinTheta * sinPhi;
+                                const z = r * cosTheta;
+                                const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
+                                const psi2 = psi * psi;
+                                if (Math.random() <= psi2 / maxPsi2) {
+                                    const posIdx = idx * 3;
+                                    posArr[posIdx] = x; posArr[posIdx+1] = y; posArr[posIdx+2] = z;
+                                    const c = psi >= 0 ? colorPositive : colorNegative;
+                                    colArr[posIdx] = c.r; colArr[posIdx+1] = c.g; colArr[posIdx+2] = c.b;
+                                    accepted++;
+                                    break;
+                                }
+                            }
+                        }
+                        currentOrbital._prevAcceptRatio = accepted > 0 ? (accepted / attempts) : currentOrbital._prevAcceptRatio;
+                        adaptiveFrame++;
+                    }
+                    
+                    geom.getAttribute('position').needsUpdate = true;
+                    geom.getAttribute('color').needsUpdate = true;
                     return;
                 }
 
@@ -812,9 +1064,8 @@
                         const sinTheta = Math.sin(theta);
                         const cosTheta = Math.cos(theta);
                         const cosPhi = Math.cos(phi);
-                        const sinPhi = Math.sin(phi);
                         const x = r * sinTheta * cosPhi;
-                        const y = r * sinTheta * sinPhi;
+                        const y = r * sinTheta * Math.sin(phi);
                         const z = r * cosTheta;
                         const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
                         const psi2 = psi * psi;
@@ -905,7 +1156,16 @@
             const pauseButton = document.getElementById('pause-toggle');
             const adaptiveButton = document.getElementById('adaptive-toggle');
             const modeButton = document.getElementById('mode-toggle');
+            const impostorButton = document.getElementById('impostor-toggle');
             const cullButton = document.getElementById('cull-toggle');
+            const clearButton = document.getElementById('clear-button');
+
+            // Initialize button states
+            pauseButton.textContent = paused ? 'Resume' : 'Pause';
+            adaptiveButton.textContent = adaptiveEnabled ? 'Adaptive On' : 'Adaptive Off';
+            modeButton.textContent = renderMode === 'instanced' ? 'Mode: Instanced' : (renderMode === 'points' ? 'Mode: Points' : 'Mode: GPU');
+            impostorButton.textContent = impostorEnabled ? 'Impostor: On' : 'Impostor: Off';
+            cullButton.textContent = occlusionEnabled ? 'Cull: On' : 'Cull: Off';
 
             buttons.forEach(button => {
                 button.addEventListener('click', (event) => {
@@ -964,6 +1224,16 @@
                 else if (renderMode === 'points') renderMode = 'gpu';
                 else renderMode = 'instanced';
                 modeButton.textContent = renderMode === 'instanced' ? 'Mode: Instanced' : (renderMode === 'points' ? 'Mode: Points' : 'Mode: GPU');
+                
+                // Update impostor button availability
+                if (renderMode === 'instanced') {
+                    impostorButton.disabled = false;
+                    impostorButton.textContent = impostorEnabled ? 'Impostor: On' : 'Impostor: Off';
+                } else {
+                    impostorButton.disabled = true;
+                    impostorButton.textContent = 'Impostor: N/A';
+                }
+                
                 scheduleRegeneration(30);
             });
 
@@ -973,6 +1243,19 @@
                 cullButton.textContent = occlusionEnabled ? 'Cull: On' : 'Cull: Off';
                 // Force regeneration so materials respect depthTest/depthWrite
                 scheduleRegeneration(20);
+            });
+
+            // Impostor toggle
+            impostorButton.addEventListener('click', () => {
+                impostorEnabled = !impostorEnabled;
+                impostorButton.textContent = impostorEnabled ? 'Impostor: On' : 'Impostor: Off';
+                // Force regeneration to switch between spheres and quads
+                scheduleRegeneration(20);
+            });
+
+            // Clear button
+            clearButton.addEventListener('click', () => {
+                clearOrbital();
             });
 
             // Set initial state
@@ -999,6 +1282,15 @@
                     resampleOrbitalInPlace();
                 }
                 controls.update();
+                
+                // Update billboard material camera positions for proper billboarding
+                if (regenerateOrbitalGeometry._matPosBillboard) {
+                    regenerateOrbitalGeometry._matPosBillboard.uniforms.cameraPosition.value.copy(camera.position);
+                }
+                if (regenerateOrbitalGeometry._matNegBillboard) {
+                    regenerateOrbitalGeometry._matNegBillboard.uniforms.cameraPosition.value.copy(camera.position);
+                }
+                
                 renderer.render(scene, camera);
                 const currentTime = performance.now();
                 frames++;
@@ -1013,6 +1305,35 @@
             regenerateOrbitalGeometry();
             animate();
         };
+
+        // Remove and dispose any current orbital objects and GPU targets
+        function clearOrbital() {
+            // remove orbital-marked children
+            scene.children.slice().forEach(child => {
+                if (child.userData && child.userData.isOrbital) {
+                    if (child.type === 'Group') {
+                        child.children.forEach(ch => { ch.geometry?.dispose?.(); ch.material?.dispose?.(); });
+                    } else {
+                        child.geometry?.dispose?.();
+                        child.material?.dispose?.();
+                    }
+                    scene.remove(child);
+                }
+            });
+            // dispose GPU resources
+            if (gpuSampleMesh) {
+                gpuSampleMesh.geometry?.dispose?.();
+                gpuSampleMesh.material?.dispose?.();
+                scene.remove(gpuSampleMesh);
+                gpuSampleMesh = null;
+            }
+            if (gpuSampleTarget) {
+                gpuSampleTarget.dispose?.();
+                gpuSampleTarget = null;
+            }
+            // clear cached current orbital reference
+            currentOrbital = null;
+        }
     </script>
 </body>
 </html>
