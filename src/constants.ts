@@ -19,5 +19,5 @@ export type RenderMode = 'instanced' | 'points' | 'gpu';
 
 // Default values
 export const DEFAULT_RENDER_MODE: RenderMode = 'instanced';
-export const DEFAULT_DENSITY = 50000;
+export const DEFAULT_DENSITY = 5000;
 export const DEFAULT_ORBITAL = { n: 2, l: 1, m: -1 };

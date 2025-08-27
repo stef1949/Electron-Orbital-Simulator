@@ -191,9 +191,9 @@ export class App {
     if (!this.materialCache.matPos) {
       const commonMatOpts = {
         transparent: true,
-        depthWrite: !this.state.occlusionEnabled,
-        depthTest: this.state.occlusionEnabled,
-        blending: THREE.AdditiveBlending
+        depthWrite: true,
+        depthTest: true
+        // blending: THREE.AdditiveBlending // Temporarily disabled
       };
       this.materialCache.matPos = new THREE.MeshBasicMaterial({ 
         color: COLOR_POSITIVE, 
@@ -244,9 +244,9 @@ export class App {
         vertexShader: billboardVertShader,
         fragmentShader: billboardFragShader,
         transparent: true,
-        depthWrite: !this.state.occlusionEnabled,
-        depthTest: this.state.occlusionEnabled,
-        blending: THREE.AdditiveBlending
+        depthWrite: true,
+        depthTest: true
+        // blending: THREE.AdditiveBlending // Temporarily disabled
       });
 
       this.materialCache.matNegBillboard = new THREE.ShaderMaterial({
@@ -257,16 +257,16 @@ export class App {
         vertexShader: billboardVertShader,
         fragmentShader: billboardFragShader,
         transparent: true,
-        depthWrite: !this.state.occlusionEnabled,
-        depthTest: this.state.occlusionEnabled,
-        blending: THREE.AdditiveBlending
+        depthWrite: true,
+        depthTest: true
+        // blending: THREE.AdditiveBlending // Temporarily disabled
       });
     }
 
     // Create geometries if not cached  
     if (!this.geometryCache.sphereGeo) {
-      this.geometryCache.sphereGeo = new THREE.SphereGeometry(0.12, 16, 12);
-      this.geometryCache.quadGeo = new THREE.PlaneGeometry(0.24, 0.24);
+      this.geometryCache.sphereGeo = new THREE.SphereGeometry(0.5, 8, 6); // Larger, simpler spheres
+      this.geometryCache.quadGeo = new THREE.PlaneGeometry(1.0, 1.0);
     }
 
     // Sample orbital using rejection sampling
