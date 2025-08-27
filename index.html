@@ -173,6 +173,7 @@
                 <button id="cull-toggle" class="orbital-button">Cull: Off</button>
                 <button id="pause-toggle" class="orbital-button">Pause</button>
                 <button id="clear-button" class="orbital-button">Clear</button>
+                <button id="screenshot-button" class="orbital-button">Save PNG</button>
             </div>
             <div id="fps-counter"> FPS:0 </div>
         </div>
@@ -192,7 +193,8 @@
             const renderer = new THREE.WebGLRenderer({
                 canvas: canvas,
                 context: context,
-                alpha: true
+                alpha: true,
+                preserveDrawingBuffer: true // allow canvas.toDataURL() to produce a valid screenshot
             });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -285,7 +287,7 @@
                         // L^{alpha}_2(x) = 1/2 (x^2 - 2(alpha+2)x + (alpha+1)(alpha+2))
                         L = 0.5 * (x * x - 2 * (alpha + 2) * x + (alpha + 1) * (alpha + 2));
                     } else if (p === 3) {
-                        // L^{alpha}_3(x) = 1/6 (-x^3 + 3(alpha+3)x^2 - 3(alpha+2)(alpha+3)x + (alpha+1)(alpha+2)(alpha+3))
+                        // L^{alpha}_3(x) = 1/6 (-x^3 + 3(alpha+3)x^2 - 3(alpha+2)(alpha+3)x + (alpha + 1)(alpha + 2)(alpha + 3))
                         L = (1 / 6) * (-x * x * x + 3 * (alpha + 3) * x * x - 3 * (alpha + 2) * (alpha + 3) * x + (alpha + 1) * (alpha + 2) * (alpha + 3));
                     } else {
                         // For larger p fallback to a simple exponential times polynomial approximation
@@ -1162,6 +1164,7 @@ void main() {
             const impostorButton = document.getElementById('impostor-toggle');
             const cullButton = document.getElementById('cull-toggle');
             const clearButton = document.getElementById('clear-button');
+            const screenshotButton = document.getElementById('screenshot-button'); // new
 
             // Initialize button states
             pauseButton.textContent = paused ? 'Resume' : 'Pause';
@@ -1261,6 +1264,35 @@ void main() {
                 clearOrbital();
             });
 
+            // Screenshot button: render with transparent clear and download PNG
+            screenshotButton.addEventListener('click', () => {
+                takeScreenshot();
+            });
+
+            // takes a transparent PNG of the current view and triggers a download
+            function takeScreenshot(filename = 'orbital_screenshot.png') {
+                // store previous clear color & alpha
+                const prevColor = renderer.getClearColor(new THREE.Color()).getHex();
+                const prevAlpha = renderer.getClearAlpha();
+
+                // render transparent background
+                renderer.setClearColor(0x000000, 0);
+                renderer.render(scene, camera);
+
+                // get PNG data
+                const dataURL = renderer.domElement.toDataURL('image/png');
+
+                // restore previous clear color/alpha
+                renderer.setClearColor(prevColor, prevAlpha);
+
+                // trigger download
+                const a = document.createElement('a');
+                a.href = dataURL;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            }
             // Set initial state
             document.querySelector('[data-orbital="1s"]').classList.add('active');
             
