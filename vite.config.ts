@@ -2,8 +2,10 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   base: process.env.NODE_ENV === 'production' ? '/Electron-Orbital-Simulator/' : '/',
+  root: 'src',
+  publicDir: '../public',
   build: {
-    outDir: 'dist',
+    outDir: '../dist',
     sourcemap: true,
     rollupOptions: {
       output: {
