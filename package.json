@@ -1,0 +1,40 @@
+{
+  "name": "electron-orbital-simulator",
+  "version": "1.0.0",
+  "description": "A WebGL-based visualiser for hydrogen-like electron orbitals using Three.js",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage"
+  },
+  "keywords": [
+    "webgl",
+    "three.js",
+    "electron",
+    "orbitals",
+    "visualization",
+    "quantum",
+    "physics"
+  ],
+  "author": "stef1949",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/three": "^0.168.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/coverage-v8": "^1.6.0",
+    "@vitest/ui": "^1.6.0",
+    "eslint": "^8.57.0",
+    "jsdom": "^24.1.3",
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0",
+    "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "three": "^0.168.0"
+  }
+}

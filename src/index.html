@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Electron Orbital Simulator</title>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #181818;
+            color: #f7f7f7;
+        }
+        #app-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            flex-direction: column;
+            padding: 1rem;
+        }
+        #canvas-container {
+            flex-grow: 1;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #orbital-panel {
+            position: absolute;
+            top: 50%;
+            right: 1rem;
+            transform: translateY(-50%);
+            padding: 0.5rem;
+            background-color: rgba(24, 24, 36, 0.5);
+            backdrop-filter: blur(2px);
+            border-radius: 0.75rem;
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.14);
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            max-height: 80vh;
+            overflow: auto;
+            z-index: 12;
+        }
+
+        #settings-panel {
+            position: absolute;
+            bottom: 5rem;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 0.7rem 1rem;
+            background-color: rgba(24, 24, 36, 0.65);
+            backdrop-filter: blur(4px);
+            border-radius: 0.75rem;
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.18);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            align-items: center;
+            z-index: 10;
+        }
+
+        .orbital-button {
+            background-color: rgba(255, 255, 255, 0.1);
+            color: #f7f7f7;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 0.4rem 0.7rem;
+            border-radius: 0.4rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 0.85rem;
+        }
+
+        .orbital-button:hover {
+            background-color: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.4);
+        }
+
+        .orbital-button.active {
+            background-color: #3b82f6;
+            border-color: #3b82f6;
+        }
+
+        .density-control {
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            color: #f7f7f7;
+            font-size: 0.85rem;
+        }
+
+        #density-slider {
+            width: 120px;
+        }
+
+        #fps-counter {
+            position: absolute;
+            top: 1rem;
+            left: 1rem;
+            color: #f7f7f7;
+            font-size: 0.85rem;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 0.3rem 0.5rem;
+            border-radius: 0.3rem;
+            z-index: 15;
+        }
+
+        .separator {
+            width: 100%;
+            height: 1px;
+            background-color: rgba(255, 255, 255, 0.2);
+            margin: 0.2rem 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="app-container">
+        <h1 style="margin-bottom: 0.5rem; text-align: center;">Electron Orbital Simulator</h1>
+        <p style="margin-bottom: 1.5rem; text-align: center; opacity: 0.8;">Click and drag to rotate, use the scroll wheel to zoom.</p>
+        
+        <div id="canvas-container">
+            <canvas id="orbital-canvas"></canvas>
+            
+            <div id="orbital-panel">
+                <button class="orbital-button" data-orbital="1s">1s</button>
+                <button class="orbital-button" data-orbital="2s">2s</button>
+                <button class="orbital-button" data-orbital="3s">3s</button>
+                <div class="separator"></div>
+                <button class="orbital-button" data-orbital="2p_x">2pₓ</button>
+                <button class="orbital-button" data-orbital="2p_y">2pᵧ</button>
+                <button class="orbital-button" data-orbital="2p_z">2p𝓏</button>
+                <button class="orbital-button" data-orbital="3p_x">3pₓ</button>
+                <button class="orbital-button" data-orbital="3p_y">3pᵧ</button>
+                <button class="orbital-button" data-orbital="3p_z">3p𝓏</button>
+                <div class="separator"></div>
+                <button class="orbital-button" data-orbital="3d_z2">3d₂²</button>
+                <button class="orbital-button" data-orbital="3d_x2-y2">3dₓ²-ᵧ²</button>
+                <button class="orbital-button" data-orbital="3d_xy">3dₓᵧ</button>
+                <button class="orbital-button" data-orbital="3d_xz">3dₓ₂</button>
+                <button class="orbital-button" data-orbital="3d_yz">3dᵧ₂</button>
+                <div class="separator"></div>
+                <button class="orbital-button" data-orbital="4s">4s</button>
+                <button class="orbital-button" data-orbital="4p_x">4pₓ</button>
+                <button class="orbital-button" data-orbital="4p_y">4pᵧ</button>
+                <button class="orbital-button" data-orbital="4p_z">4p𝓏</button>
+                <button class="orbital-button" data-orbital="4d_z2">4d₂²</button>
+                <button class="orbital-button" data-orbital="4d_x2-y2">4dₓ²-ᵧ²</button>
+                <button class="orbital-button" data-orbital="4d_xy">4dₓᵧ</button>
+                <button class="orbital-button" data-orbital="4d_xz">4dₓ₂</button>
+                <button class="orbital-button" data-orbital="4d_yz">4dᵧ₂</button>
+            </div>
+            
+            <div id="settings-panel">
+                <div class="density-control">
+                    <label for="density-slider">Density:</label>
+                    <div id="density-value">50000</div>
+                    <span>points</span>
+                </div>
+                <input type="range" id="density-slider" min="1000" max="250000" value="50000" step="1000">
+                <button id="adaptive-toggle" class="orbital-button">Adaptive Off</button>
+                <button id="mode-toggle" class="orbital-button">Mode: Instanced</button>
+                <button id="impostor-toggle" class="orbital-button">Impostor: Off</button>
+                <button id="cull-toggle" class="orbital-button">Cull: Off</button>
+                <button id="pause-toggle" class="orbital-button">Pause</button>
+                <button id="clear-button" class="orbital-button">Clear</button>
+            </div>
+            <div id="fps-counter"> FPS:0 </div>
+        </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
