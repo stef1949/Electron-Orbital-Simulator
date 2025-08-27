@@ -1,4 +1,6 @@
-# Electron Orbital Visualiser
+<h1 align="center">
+  Electron Orbital Visualiser 
+</h1>
 
 A WebGL-based visualiser for hydrogen-like electron orbitals using Three.js. Supports CPU rejection-sampling, GPU sampling (render-to-texture), instanced spheres and point-cloud rendering with additive blending and optional occlusion culling.
 
