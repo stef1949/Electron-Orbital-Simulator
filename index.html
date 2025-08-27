@@ -811,7 +811,7 @@ void main() {
                 // First pass: sample and store transforms separately by sign
                 const posTransforms = [];
                 const negTransforms = [];
-                const MAX_ATTEMPTS = numPoints * 10;
+                const MAX_ATTEMPTS = numPoints * 5;
                 let attempts = 0;
                 while ((posTransforms.length + negTransforms.length) < numPoints && attempts < MAX_ATTEMPTS) {
                     attempts++;
@@ -911,11 +911,11 @@ void main() {
             function resampleOrbitalInPlace() {
                 // GPU mode: re-render samples into the target and update points texture
                 if (renderMode === 'gpu') {
-                    const { n, l, m } = currentOrbitalData;
-                    const desiredPoints = parseInt(densitySlider.value);
+                    const { n: gpuN, l: gpuL, m: gpuM } = currentOrbitalData;
+                    const gpuDesiredPoints = parseInt(densitySlider.value);
                     // If config changed, regenerate geometry
-                    const sameConfig = currentOrbital && currentOrbital._lastConfig && currentOrbital._lastConfig.n === n && currentOrbital._lastConfig.l === l && currentOrbital._lastConfig.m === m && currentOrbital._lastConfig.numPoints === desiredPoints;
-                    const rt = renderGPUSamples(n, l, m, desiredPoints);
+                    const gpuSameConfig = currentOrbital && currentOrbital._lastConfig && currentOrbital._lastConfig.n === gpuN && currentOrbital._lastConfig.l === gpuL && currentOrbital._lastConfig.m === gpuM && currentOrbital._lastConfig.numPoints === gpuDesiredPoints;
+                    const rt = renderGPUSamples(gpuN, gpuL, gpuM, gpuDesiredPoints);
                     gpuSampleTarget = rt;
 
                     // Ensure old orbital objects are removed before adding/updating GPU mesh
@@ -929,28 +929,28 @@ void main() {
                         }
                     });
 
-                        if (gpuSampleMesh) {
-                            gpuSampleMesh.material.uniforms.uSamples.value = rt.texture;
-                            currentOrbital._lastConfig = { n, l, m, numPoints: desiredPoints };
-                        } else {
-                            // create mesh if missing
-                            gpuSampleMesh = createGPUPointsMesh(rt, desiredPoints);
-                            gpuSampleMesh.userData = gpuSampleMesh.userData || {};
-                            gpuSampleMesh.userData.isOrbital = true;
-                            scene.add(gpuSampleMesh);
-                            currentOrbital = gpuSampleMesh;
-                            currentOrbital._lastConfig = { n, l, m, numPoints: desiredPoints };
-                        }
-                        return;
+                    if (gpuSampleMesh) {
+                        gpuSampleMesh.material.uniforms.uSamples.value = rt.texture;
+                        currentOrbital._lastConfig = { n: gpuN, l: gpuL, m: gpuM, numPoints: gpuDesiredPoints };
+                    } else {
+                        // create mesh if missing
+                        gpuSampleMesh = createGPUPointsMesh(rt, gpuDesiredPoints);
+                        gpuSampleMesh.userData = gpuSampleMesh.userData || {};
+                        gpuSampleMesh.userData.isOrbital = true;
+                        scene.add(gpuSampleMesh);
+                        currentOrbital = gpuSampleMesh;
+                        currentOrbital._lastConfig = { n: gpuN, l: gpuL, m: gpuM, numPoints: gpuDesiredPoints };
                     }
+                    return;
+                }
 
                 // Points mode: resample the buffer geometry positions and colors
                 if (renderMode === 'points') {
                     if (!currentOrbital || currentOrbital.type !== 'Points') return;
-                    const { n, l, m } = currentOrbitalData;
-                    const desiredPoints = parseInt(densitySlider.value);
-                    const sameConfig = currentOrbital._lastConfig && currentOrbital._lastConfig.n === n && currentOrbital._lastConfig.l === l && currentOrbital._lastConfig.m === m && currentOrbital._lastConfig.numPoints === desiredPoints;
-                    if (!sameConfig) {
+                    const { n: pointsN, l: pointsL, m: pointsM } = currentOrbitalData;
+                    const pointsDesiredPoints = parseInt(densitySlider.value);
+                    const pointsSameConfig = currentOrbital._lastConfig && currentOrbital._lastConfig.n === pointsN && currentOrbital._lastConfig.l === pointsL && currentOrbital._lastConfig.m === pointsM && currentOrbital._lastConfig.numPoints === pointsDesiredPoints;
+                    if (!pointsSameConfig) {
                         regenerateOrbitalGeometry();
                         return;
                     }
@@ -962,7 +962,7 @@ void main() {
                     
                     if (!adaptiveEnabled) {
                         // Full refresh for points mode
-                        const maxPsi2 = estimateMaxPsi2(n, l, m, Math.min(1200, Math.max(200, numPoints)));
+                        const maxPsi2 = estimateMaxPsi2(pointsN, pointsL, pointsM, Math.min(1200, Math.max(200, numPoints)));
                         let written = 0, attempts = 0, MAX_ATTEMPTS = numPoints * 20;
                         while (written < numPoints && attempts < MAX_ATTEMPTS) {
                             attempts++;
@@ -975,7 +975,7 @@ void main() {
                             const x = r * sinTheta * cosPhi;
                             const y = r * sinTheta * Math.sin(phi);
                             const z = r * cosTheta;
-                            const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
+                            const psi = getWaveFunctionValue(pointsN, pointsL, pointsM, r, theta, phi);
                             const psi2 = psi * psi;
                             if (Math.random() <= psi2 / maxPsi2) {
                                 const i = written * 3;
@@ -994,7 +994,7 @@ void main() {
                     } else {
                         // Adaptive mode for points: update random subset
                         if (!cachedMaxPsi2 || adaptiveFrame % ADAPTIVE_MAX_RECALC_INTERVAL === 0) {
-                            const fresh = estimateMaxPsi2(n, l, m, 600);
+                            const fresh = estimateMaxPsi2(pointsN, pointsL, pointsM, 600);
                             if (emaMaxPsi2 == null) emaMaxPsi2 = fresh; else emaMaxPsi2 = EMA_ALPHA * fresh + (1 - EMA_ALPHA) * emaMaxPsi2;
                             cachedMaxPsi2 = emaMaxPsi2;
                         }
@@ -1017,7 +1017,7 @@ void main() {
                                 const x = r * sinTheta * cosPhi;
                                 const y = r * sinTheta * sinPhi;
                                 const z = r * cosTheta;
-                                const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
+                                const psi = getWaveFunctionValue(pointsN, pointsL, pointsM, r, theta, phi);
                                 const psi2 = psi * psi;
                                 if (Math.random() <= psi2 / maxPsi2) {
                                     const posIdx = idx * 3;
