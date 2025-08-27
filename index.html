@@ -45,6 +45,7 @@
             transform: translateY(-50%);
             padding: 0.5rem;
             background-color: rgba(24, 24, 36, 0.5);
+            -webkit-backdrop-filter: blur(2px);
             backdrop-filter: blur(2px);
             border-radius: 0.75rem;
             box-shadow: 0 6px 12px rgba(0, 0, 0, 0.14);
@@ -55,7 +56,6 @@
             overflow: auto;
             z-index: 12;
         }
-
         #settings-panel {
             position: absolute;
             bottom: 5rem;
@@ -63,9 +63,11 @@
             transform: translateX(-50%);
             padding: 0.75rem 1rem;
             background-color: rgba(30, 30, 46, 0.5);
+            -webkit-backdrop-filter: blur(2px);
             backdrop-filter: blur(2px);
             border-radius: 0.75rem;
             box-shadow: 0 6px 12px rgba(0, 0, 0, 0.14);
+            display: flex;
             display: flex;
             gap: 0.5rem;
             align-items: center;
@@ -106,15 +108,16 @@
         }
         .slider-container label {
             font-size: 0.875rem;
-            color: #a0aec0;
-        }
         #fps-counter {
             position: absolute;
             top: 1rem;
             left: 1rem;
             padding: 0.5rem 1rem;
             background-color: rgba(30, 30, 46, 0.5);
+            -webkit-backdrop-filter: blur(2px);
             backdrop-filter: blur(2px);
+            border-radius: 0.75rem;
+            font-size: 0.875rem;
             border-radius: 0.75rem;
             font-size: 0.875rem;
             font-weight: bold;
