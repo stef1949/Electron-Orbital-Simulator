@@ -372,11 +372,27 @@
                 const size = Math.ceil(Math.sqrt(numPoints));
                 const width = size;
                 const height = Math.ceil(numPoints / width);
+                
                 // Dispose previous
                 if (gpuSampleTarget) {
                     gpuSampleTarget.dispose();
                     gpuSampleTarget = null;
                 }
+                
+                // Check WebGL capabilities before creating render target
+                const gl = renderer.getContext();
+                if (!renderer.capabilities.isWebGL2) {
+                    console.error('GPU mode requires WebGL2');
+                    return null;
+                }
+                
+                const floatExtension = renderer.extensions.get('EXT_color_buffer_float') || 
+                                     renderer.extensions.get('WEBGL_color_buffer_float');
+                if (!floatExtension) {
+                    console.error('GPU mode requires floating point render target support');
+                    return null;
+                }
+                
                 const rt = new THREE.WebGLRenderTarget(width, height, {
                     wrapS: THREE.ClampToEdgeWrapping,
                     wrapT: THREE.ClampToEdgeWrapping,
@@ -387,6 +403,19 @@
                     depthBuffer: false,
                     stencilBuffer: false
                 });
+                
+                // Validate render target creation
+                const prevTarget = renderer.getRenderTarget();
+                renderer.setRenderTarget(rt);
+                const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+                renderer.setRenderTarget(prevTarget);
+                
+                if (status !== gl.FRAMEBUFFER_COMPLETE) {
+                    console.error('GPU render target creation failed:', status);
+                    rt.dispose();
+                    return null;
+                }
+                
                 rt._texWidth = width;
                 rt._texHeight = height;
                 gpuSampleTarget = rt;
@@ -410,13 +439,19 @@ float random(vec2 st) {
     return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
 }
 
+// Better random function with improved distribution
+float random2(vec2 st, float seed) {
+    return fract(sin(dot(st.xy + seed, vec2(12.9898, 78.233))) * 43758.5453123);
+}
+
 vec3 sphericalToCartesian(float r, float theta, float phi) {
     return vec3(r * sin(theta) * cos(phi), r * sin(theta) * sin(phi), r * cos(theta));
 }
 
 float getRadial(float r, float n, float l) {
     float x = 2.0 * r / n;
-    vec2 texCoord = vec2((x / 10.0), 0.0);
+    // Proper scaling based on actual LUT range
+    vec2 texCoord = vec2(clamp(x / 20.0, 0.0, 1.0), 0.0);
     return texture(uRadialLUT, texCoord).r;
 }
 
@@ -439,27 +474,27 @@ float getAngular(float theta, float phi, float l, float m) {
 
 void main() {
     vec2 uv = gl_FragCoord.xy / uResolution;
-    float idx = uv.x * uNumPoints;
+    float idx = uv.x + uv.y * uResolution.x;
     if (idx >= uNumPoints) discard;
 
-    vec2 seed = uv + uSeed;
+    vec2 baseSeed = uv + vec2(uSeed);
     float psi = 0.0;
     vec3 pos = vec3(0.0);
     bool found = false;
 
     // Rejection sampling loop with fallback
     for (int attempt = 0; attempt < 100; attempt++) {
-        float r = random(seed) * 30.0;
-        float theta = acos(2.0 * random(seed + 1.0) - 1.0);
-        float phi = random(seed + 2.0) * 6.283185;
-        seed += 3.0;
+        float attemptSeed = float(attempt);
+        float r = random2(baseSeed, attemptSeed) * 30.0;
+        float theta = acos(2.0 * random2(baseSeed, attemptSeed + 1.0) - 1.0);
+        float phi = random2(baseSeed, attemptSeed + 2.0) * 6.283185;
 
         float radial = getRadial(r, uN, uL);
         float angular = getAngular(theta, phi, uL, uM);
         psi = radial * angular;
         float psi2 = psi * psi;
 
-        if (random(seed) < psi2 / uMaxPsi2) {
+        if (random2(baseSeed, attemptSeed + 3.0) < psi2 / uMaxPsi2) {
             pos = sphericalToCartesian(r, theta, phi);
             found = true;
             break;
@@ -468,9 +503,9 @@ void main() {
 
     // Fallback: uniform sampling if rejection fails
     if (!found) {
-        float r = random(seed) * 30.0;
-        float theta = acos(2.0 * random(seed + 1.0) - 1.0);
-        float phi = random(seed + 2.0) * 6.283185;
+        float r = random2(baseSeed, 100.0) * 30.0;
+        float theta = acos(2.0 * random2(baseSeed, 101.0) - 1.0);
+        float phi = random2(baseSeed, 102.0) * 6.283185;
         pos = sphericalToCartesian(r, theta, phi);
         psi = getRadial(r, uN, uL) * getAngular(theta, phi, uL, uM);
     }
@@ -488,6 +523,12 @@ void main() {
                 gpuLUTSize = 1024;
 
                 const rt = createGPUSampleTarget(numPoints);
+                if (!rt) {
+                    console.error('Failed to create GPU sample target, falling back to points mode');
+                    renderMode = 'points';
+                    updateModeButtonText();
+                    return null;
+                }
                 const width = rt._texWidth, height = rt._texHeight;
 
                 // Build quad scene if not present
@@ -509,7 +550,7 @@ void main() {
                         uL: { value: l },
                         uM: { value: m },
                         uRadialLUT: { value: radialLUTCache[`${n}_${l}`] },
-                        uLUTSize: { value: 256 },
+                        uLUTSize: { value: gpuLUTSize }, // Use consistent LUT size
                         uMaxPsi2: { value: estimateMaxPsi2(n, l, m) }, // precompute max |psi|^2
                         uNumPoints: { value: numPoints },
                         uResolution: { value: new THREE.Vector2(gpuSampleTarget.width, gpuSampleTarget.height) },
@@ -525,17 +566,6 @@ void main() {
                     fragmentShader: gpuSampleFragShader // updated
                 });
 
-                // After creating quadMat, check for compilation errors
-                if (quadMat.program) {
-                    const gl = renderer.getContext();
-                    const program = quadMat.program.program;
-                    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-                        console.error('Shader link error:', gl.getProgramInfoLog(program));
-                    }
-                    const fragLog = gl.getShaderInfoLog(quadMat.program.fragmentShader);
-                    if (fragLog) console.error('Fragment shader compile error:', fragLog);
-                }
-
                 const quad = new THREE.Mesh(quadGeom, quadMat);
                 gpuQuadScene.add(quad);
 
@@ -546,6 +576,19 @@ void main() {
                 const orthoCamera = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
                 renderer.render(gpuQuadScene, orthoCamera);
                 renderer.setRenderTarget(prevRenderTarget);
+
+                // Check for compilation errors after rendering (when shaders are actually compiled)
+                if (quadMat.program) {
+                    const gl = renderer.getContext();
+                    const program = quadMat.program.program;
+                    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                        console.error('GPU Shader link error:', gl.getProgramInfoLog(program));
+                    }
+                    const vertShader = gl.getShaderInfoLog(quadMat.program.vertexShader);
+                    const fragShader = gl.getShaderInfoLog(quadMat.program.fragmentShader);
+                    if (vertShader) console.error('GPU Vertex shader compile error:', vertShader);
+                    if (fragShader) console.error('GPU Fragment shader compile error:', fragShader);
+                }
 
                 return rt;
             }
@@ -797,6 +840,12 @@ void main() {
                 if (renderMode === 'gpu') {
                     // Clean old (already cleaned above)
                     const rt = renderGPUSamples(n, l, m, numPoints);
+                    if (!rt) {
+                        // GPU mode failed, renderGPUSamples should have set renderMode to 'points'
+                        // Re-call this function to regenerate with points mode
+                        regenerateOrbitalGeometry(n, l, m, numPoints);
+                        return;
+                    }
                     // create GPU points mesh
                     gpuSampleTarget = rt;
                     if (gpuSampleMesh) {
@@ -922,6 +971,11 @@ void main() {
                     // If config changed, regenerate geometry
                     const gpuSameConfig = currentOrbital && currentOrbital._lastConfig && currentOrbital._lastConfig.n === gpuN && currentOrbital._lastConfig.l === gpuL && currentOrbital._lastConfig.m === gpuM && currentOrbital._lastConfig.numPoints === gpuDesiredPoints;
                     const rt = renderGPUSamples(gpuN, gpuL, gpuM, gpuDesiredPoints);
+                    if (!rt) {
+                        // GPU mode failed, regenerate with the new mode
+                        regenerateOrbitalGeometry(gpuN, gpuL, gpuM, gpuDesiredPoints);
+                        return;
+                    }
                     gpuSampleTarget = rt;
 
                     // Ensure old orbital objects are removed before adding/updating GPU mesh
@@ -1167,10 +1221,15 @@ void main() {
             const clearButton = document.getElementById('clear-button');
             const screenshotButton = document.getElementById('screenshot-button'); // new
 
+            // Function to update mode button text (can be called when mode changes due to fallback)
+            function updateModeButtonText() {
+                modeButton.textContent = renderMode === 'instanced' ? 'Mode: Instanced' : (renderMode === 'points' ? 'Mode: Points' : 'Mode: GPU');
+            }
+
             // Initialize button states
             pauseButton.textContent = paused ? 'Resume' : 'Pause';
             adaptiveButton.textContent = adaptiveEnabled ? 'Adaptive On' : 'Adaptive Off';
-            modeButton.textContent = renderMode === 'instanced' ? 'Mode: Instanced' : (renderMode === 'points' ? 'Mode: Points' : 'Mode: GPU');
+            updateModeButtonText();
             impostorButton.textContent = impostorEnabled ? 'Impostor: On' : 'Impostor: Off';
             cullButton.textContent = occlusionEnabled ? 'Cull: On' : 'Cull: Off';
 
@@ -1230,7 +1289,7 @@ void main() {
                 if (renderMode === 'instanced') renderMode = 'points';
                 else if (renderMode === 'points') renderMode = 'gpu';
                 else renderMode = 'instanced';
-                modeButton.textContent = renderMode === 'instanced' ? 'Mode: Instanced' : (renderMode === 'points' ? 'Mode: Points' : 'Mode: GPU');
+                updateModeButtonText();
                 
                 // Update impostor button availability
                 if (renderMode === 'instanced') {
