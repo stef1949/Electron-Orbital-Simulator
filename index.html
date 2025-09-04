@@ -9,10 +9,24 @@
     <script type="importmap">
         {
             "imports": {
-                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+                "three": "./libs/three/three.module.js",
+                "three/addons/": "./libs/three/addons/"
             }
         }
+    </script>
+    <!-- Fallback to CDN if local files not available -->
+    <script>
+        // Test if local files are available, fallback to CDN
+        fetch('./libs/three/three.module.js').catch(() => {
+            // Create a new importmap for CDN fallback
+            const importMap = document.querySelector('script[type="importmap"]');
+            importMap.innerHTML = JSON.stringify({
+                "imports": {
+                    "three": "https://cdn.skypack.dev/three@0.160.0",
+                    "three/addons/": "https://cdn.skypack.dev/three@0.160.0/examples/jsm/"
+                }
+            });
+        });
     </script>
     <style>
         body {
