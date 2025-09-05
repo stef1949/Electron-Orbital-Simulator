@@ -5,9 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Electron Orbital Simulator</title>
     <script src="https://cdn.tailwindcss.com"></script>
-   <!-- Three.js + OrbitControls, pinned to r128 and loaded in order -->
-    <script defer src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+   <!-- Three.js r160 with WebGPU support using ES modules -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "./libs/three/three.module.js",
+                "three/addons/": "./libs/three/addons/"
+            }
+        }
+    </script>
+    <!-- Fallback to CDN if local files not available -->
+    <script>
+        // Test if local files are available, fallback to CDN
+        fetch('./libs/three/three.module.js').catch(() => {
+            // Create a new importmap for CDN fallback
+            const importMap = document.querySelector('script[type="importmap"]');
+            importMap.innerHTML = JSON.stringify({
+                "imports": {
+                    "three": "https://cdn.skypack.dev/three@0.160.0",
+                    "three/addons/": "https://cdn.skypack.dev/three@0.160.0/examples/jsm/"
+                }
+            });
+        });
+    </script>
     <style>
         body {
             font-family: 'Inter', sans-serif;
@@ -180,102 +200,199 @@
         </div>
     </div>
 
-    <script>
-        window.onload = function() {
-            // --- Scene Setup ---
-            const scene = new THREE.Scene();
-            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            
-            // Request a WebGL2 rendering context
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import WebGPURenderer from 'three/addons/renderers/webgpu/WebGPURenderer.js';
+
+        // Global variables for debugging and console access
+        window.THREE = THREE;
+        window.scene = null;
+        window.renderer = null;
+        window.camera = null;
+
+        async function initializeRenderer() {
             const canvas = document.getElementById('orbital-canvas');
-            const context = canvas.getContext('webgl2');
+            let renderer = null;
+            let rendererType = 'unknown';
 
-            // Initialize the renderer with the WebGL2 context
-            const renderer = new THREE.WebGLRenderer({
-                canvas: canvas,
-                context: context,
-                alpha: true,
-                preserveDrawingBuffer: true // allow canvas.toDataURL() to produce a valid screenshot
-            });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-
-            // Set camera position and controls
-            camera.position.z = 20;
-            const controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-            controls.dampingFactor = 0.25;
-            controls.enableZoom = true;
-
-            // --- Lighting ---
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-            scene.add(ambientLight);
-            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
-            directionalLight.position.set(0, 1, 1);
-            scene.add(directionalLight);
-
-            // --- Orbital Visualization ---
-            let currentOrbital = null;
-            let currentOrbitalData = { n: 2, l: 1, m: -1 }; // Track the current orbital
-            let debounceTimer = null; // debounce handle
-            let paused = false; // controls per-frame resampling
-            let adaptiveEnabled = false; // adaptive sampling toggle
-            let adaptiveFrame = 0; // frame counter for adaptive updates
-            let cachedMaxPsi2 = null; // reused across frames in adaptive mode
-            let emaMaxPsi2 = null; // exponential moving average for maxPsi2
-            const ADAPTIVE_MAX_RECALC_INTERVAL = 15; // frames
-            const ADAPTIVE_TARGET_ACCEPT = 0.28; // target acceptance ratio
-            const ADAPTIVE_BASE_ATTEMPTS_FACTOR = 6; // attempts per instance baseline
-            const SUBSET_RESAMPLE_FRACTION = 0.05; // fraction of instances updated per adaptive frame
-            const EMA_ALPHA = 0.25; // smoothing factor for maxPsi2
-            let renderMode = 'instanced'; // 'instanced' or 'points'
-            // renderMode can also be 'gpu' for GPU-based sampling + point-cloud shader
-            let occlusionEnabled = false; // toggles depth-based occlusion culling
-            let impostorEnabled = false; // toggles impostor rendering for instanced mode (billboard quads instead of spheres)
-            // Points mode reusable buffers
-            let pointsCache = { geometry: null, material: null, capacity: 0 };
-            const maxRadius = 30;
-            const colorPositive = new THREE.Color(0x2e64e1); // A vibrant blue
-            const colorNegative = new THREE.Color(0xff6666); // A vibrant red
-            const ACCEPTANCE_SCALE = 10; // Acceptance probability scale factor
-            const dummyObject3D = new THREE.Object3D(); // For instanced transforms
-
-            // --- GPU sampling resources ---
-            let gpuSampleTarget = null; // render target where samples are written (RGBA32F)
-            let gpuSampleMesh = null; // points mesh that reads from the render target
-            let gpuQuadScene = null; // scene used to render sampling quad
-            let gpuRadialLUT = null; // DataTexture (1D) for radial lookup
-            let gpuLUTSize = 0;
-            const radialLUTCache = {}; // cache DataTextures per (n,l)
-
-            // Estimate maximum |psi|^2 via random sampling for rejection sampling normalization
-            function estimateMaxPsi2(n, l, m, samples = 1000) {
-                let maxPsi2 = 0;
-                for (let i = 0; i < samples; i++) {
-                    const r = Math.random() * maxRadius;
-                    const theta = Math.acos(2 * Math.random() - 1);
-                    const phi = Math.random() * 2 * Math.PI;
-                    const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
-                    const psi2 = psi * psi;
-                    if (psi2 > maxPsi2) maxPsi2 = psi2;
+            // Try WebGPU first
+            if (navigator.gpu) {
+                try {
+                    console.log('Attempting WebGPU initialization...');
+                    renderer = new WebGPURenderer({ 
+                        canvas: canvas,
+                        alpha: true,
+                        antialias: true
+                    });
+                    await renderer.init();
+                    rendererType = 'WebGPU';
+                    console.log('✅ WebGPU renderer initialized successfully');
+                } catch (error) {
+                    console.warn('❌ WebGPU initialization failed:', error);
+                    renderer = null;
                 }
-                // Prevent division by zero
-                return maxPsi2 > 0 ? maxPsi2 : 1e-6;
+            } else {
+                console.log('WebGPU not supported in this browser');
             }
 
-            // Calculates the wave function value (which can be positive or negative)
-            // Note: This is a simplified, real-valued version for visualization.
-            function getWaveFunctionValue(n, l, m, r, theta, phi) {
-                let radial_part = 0;
-                let angular_part = 0;
+            // Fallback to WebGL2
+            if (!renderer) {
+                try {
+                    console.log('Falling back to WebGL2...');
+                    const context = canvas.getContext('webgl2');
+                    if (context) {
+                        renderer = new THREE.WebGLRenderer({
+                            canvas: canvas,
+                            context: context,
+                            alpha: true,
+                            preserveDrawingBuffer: true,
+                            antialias: true
+                        });
+                        rendererType = 'WebGL2';
+                        console.log('✅ WebGL2 renderer initialized successfully');
+                    } else {
+                        throw new Error('WebGL2 context not available');
+                    }
+                } catch (error) {
+                    console.warn('❌ WebGL2 initialization failed:', error);
+                }
+            }
 
-                // Radial part R(r) - hydrogenic-like using associated Laguerre polynomials (unnormalized)
-                // Uses x = 2r/n and L^{alpha}_p where p = n-l-1, alpha = 2l+1
-                if (n <= l) {
-                    radial_part = 0;
-                } else {
-                    const x = 2 * r / n;
-                    const p = n - l - 1;
+            // Final fallback to WebGL1
+            if (!renderer) {
+                try {
+                    console.log('Final fallback to WebGL1...');
+                    renderer = new THREE.WebGLRenderer({
+                        canvas: canvas,
+                        alpha: true,
+                        preserveDrawingBuffer: true,
+                        antialias: true
+                    });
+                    rendererType = 'WebGL1';
+                    console.log('✅ WebGL1 renderer initialized successfully');
+                } catch (error) {
+                    console.error('❌ All renderer initialization attempts failed:', error);
+                    throw new Error('No compatible renderer found');
+                }
+            }
+
+            // Configure renderer
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            
+            // Add renderer info to DOM
+            const rendererInfo = document.createElement('div');
+            rendererInfo.id = 'renderer-info';
+            rendererInfo.style.cssText = `
+                position: absolute;
+                top: 3rem;
+                left: 1rem;
+                padding: 0.5rem 1rem;
+                background-color: rgba(30, 30, 46, 0.8);
+                backdrop-filter: blur(2px);
+                border-radius: 0.75rem;
+                font-size: 0.75rem;
+                font-weight: bold;
+                color: #a0aec0;
+                z-index: 10;
+            `;
+            rendererInfo.textContent = `Renderer: ${rendererType}`;
+            document.body.appendChild(rendererInfo);
+
+            return { renderer, rendererType };
+        }
+
+        async function main() {
+            try {
+                // Initialize renderer
+                const { renderer, rendererType } = await initializeRenderer();
+                window.renderer = renderer;
+
+                // --- Scene Setup ---
+                const scene = new THREE.Scene();
+                window.scene = scene;
+                
+                const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                window.camera = camera;
+
+                // Set camera position and controls
+                camera.position.z = 20;
+                const controls = new OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.25;
+                controls.enableZoom = true;
+
+                // --- Lighting ---
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+                scene.add(ambientLight);
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+                directionalLight.position.set(0, 1, 1);
+                scene.add(directionalLight);
+
+                // --- Orbital Visualization ---
+                let currentOrbital = null;
+                let currentOrbitalData = { n: 2, l: 1, m: -1 }; // Track the current orbital
+                let debounceTimer = null; // debounce handle
+                let paused = false; // controls per-frame resampling
+                let adaptiveEnabled = false; // adaptive sampling toggle
+                let adaptiveFrame = 0; // frame counter for adaptive updates
+                let cachedMaxPsi2 = null; // reused across frames in adaptive mode
+                let emaMaxPsi2 = null; // exponential moving average for maxPsi2
+                const ADAPTIVE_MAX_RECALC_INTERVAL = 15; // frames
+                const ADAPTIVE_TARGET_ACCEPT = 0.28; // target acceptance ratio
+                const ADAPTIVE_BASE_ATTEMPTS_FACTOR = 6; // attempts per instance baseline
+                const SUBSET_RESAMPLE_FRACTION = 0.05; // fraction of instances updated per adaptive frame
+                const EMA_ALPHA = 0.25; // smoothing factor for maxPsi2
+                let renderMode = 'instanced'; // 'instanced', 'points', 'gpu'
+                // renderMode can also be 'gpu' for GPU-based sampling + point-cloud shader (WebGL2/WebGPU)
+                let gpuBackend = rendererType; // Track which GPU backend is being used
+                let occlusionEnabled = false; // toggles depth-based occlusion culling
+                let impostorEnabled = false; // toggles impostor rendering for instanced mode (billboard quads instead of spheres)
+                // Points mode reusable buffers
+                let pointsCache = { geometry: null, material: null, capacity: 0 };
+                const maxRadius = 30;
+                const colorPositive = new THREE.Color(0x2e64e1); // A vibrant blue
+                const colorNegative = new THREE.Color(0xff6666); // A vibrant red
+                const ACCEPTANCE_SCALE = 10; // Acceptance probability scale factor
+                const dummyObject3D = new THREE.Object3D(); // For instanced transforms
+
+                // --- GPU sampling resources ---
+                let gpuSampleTarget = null; // render target where samples are written (RGBA32F)
+                let gpuSampleMesh = null; // points mesh that reads from the render target
+                let gpuQuadScene = null; // scene used to render sampling quad
+                let gpuRadialLUT = null; // DataTexture (1D) for radial lookup
+                let gpuLUTSize = 0;
+                const radialLUTCache = {}; // cache DataTextures per (n,l)
+
+                // Estimate maximum |psi|^2 via random sampling for rejection sampling normalization
+                function estimateMaxPsi2(n, l, m, samples = 1000) {
+                    let maxPsi2 = 0;
+                    for (let i = 0; i < samples; i++) {
+                        const r = Math.random() * maxRadius;
+                        const theta = Math.acos(2 * Math.random() - 1);
+                        const phi = Math.random() * 2 * Math.PI;
+                        const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
+                        const psi2 = psi * psi;
+                        if (psi2 > maxPsi2) maxPsi2 = psi2;
+                    }
+                    // Prevent division by zero
+                    return maxPsi2 > 0 ? maxPsi2 : 1e-6;
+                }
+
+                // Calculates the wave function value (which can be positive or negative)
+                // Note: This is a simplified, real-valued version for visualization.
+                function getWaveFunctionValue(n, l, m, r, theta, phi) {
+                    let radial_part = 0;
+                    let angular_part = 0;
+
+                    // Radial part R(r) - hydrogenic-like using associated Laguerre polynomials (unnormalized)
+                    // Uses x = 2r/n and L^{alpha}_p where p = n-l-1, alpha = 2l+1
+                    if (n <= l) {
+                        radial_part = 0;
+                    } else {
+                        const x = 2 * r / n;
+                        const p = n - l - 1;
                     const alpha = 2 * l + 1;
                     let L = 1;
                     // Associated Laguerre polynomials for p = 0..3 (covers n <= 4)
@@ -367,60 +484,99 @@
                 return tex;
             }
 
-            // Create or update a GPU render target sized to hold numPoints samples (RGBA32F)
-            function createGPUSampleTarget(numPoints) {
-                const size = Math.ceil(Math.sqrt(numPoints));
-                const width = size;
-                const height = Math.ceil(numPoints / width);
-                
-                // Dispose previous
-                if (gpuSampleTarget) {
-                    gpuSampleTarget.dispose();
-                    gpuSampleTarget = null;
+                // Create or update a GPU render target sized to hold numPoints samples (RGBA32F)
+                // Supports both WebGL and WebGPU backends
+                function createGPUSampleTarget(numPoints) {
+                    const size = Math.ceil(Math.sqrt(numPoints));
+                    const width = size;
+                    const height = Math.ceil(numPoints / width);
+                    
+                    // Dispose previous
+                    if (gpuSampleTarget) {
+                        gpuSampleTarget.dispose();
+                        gpuSampleTarget = null;
+                    }
+                    
+                    // WebGPU backend
+                    if (gpuBackend === 'WebGPU') {
+                        try {
+                            console.log('Creating WebGPU render target...');
+                            const rt = new THREE.RenderTarget(width, height, {
+                                wrapS: THREE.ClampToEdgeWrapping,
+                                wrapT: THREE.ClampToEdgeWrapping,
+                                minFilter: THREE.NearestFilter,
+                                magFilter: THREE.NearestFilter,
+                                type: THREE.FloatType,
+                                format: THREE.RGBAFormat,
+                                samples: 0, // No antialiasing for sampling
+                                generateMipmaps: false
+                            });
+                            
+                            rt._texWidth = width;
+                            rt._texHeight = height;
+                            gpuSampleTarget = rt;
+                            console.log(`✅ WebGPU render target created: ${width}x${height}`);
+                            return rt;
+                        } catch (error) {
+                            console.error('❌ WebGPU render target creation failed:', error);
+                            return null;
+                        }
+                    }
+                    
+                    // WebGL2 backend (original implementation)
+                    else if (gpuBackend === 'WebGL2') {
+                        // Check WebGL capabilities before creating render target
+                        const gl = renderer.getContext();
+                        if (!renderer.capabilities.isWebGL2) {
+                            console.error('GPU mode requires WebGL2');
+                            return null;
+                        }
+                        
+                        const floatExtension = renderer.extensions.get('EXT_color_buffer_float') || 
+                                             renderer.extensions.get('WEBGL_color_buffer_float');
+                        if (!floatExtension) {
+                            console.error('GPU mode requires floating point render target support');
+                            return null;
+                        }
+                        
+                        const rt = new THREE.WebGLRenderTarget(width, height, {
+                            wrapS: THREE.ClampToEdgeWrapping,
+                            wrapT: THREE.ClampToEdgeWrapping,
+                            minFilter: THREE.NearestFilter,
+                            magFilter: THREE.NearestFilter,
+                            type: THREE.FloatType,
+                            format: THREE.RGBAFormat,
+                            depthBuffer: false,
+                            stencilBuffer: false
+                        });
+                        
+                        // Validate render target creation
+                        const prevTarget = renderer.getRenderTarget();
+                        renderer.setRenderTarget(rt);
+                        const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+                        renderer.setRenderTarget(prevTarget);
+                        
+                        if (status !== gl.FRAMEBUFFER_COMPLETE) {
+                            console.error('GPU render target creation failed:', status);
+                            rt.dispose();
+                            return null;
+                        }
+                        
+                        rt._texWidth = width;
+                        rt._texHeight = height;
+                        gpuSampleTarget = rt;
+                        console.log(`✅ WebGL2 render target created: ${width}x${height}`);
+                        return rt;
+                    }
+                    
+                    // WebGL1 fallback - disable GPU mode
+                    else {
+                        console.warn('GPU sampling requires WebGL2 or WebGPU, falling back to Points mode');
+                        renderMode = 'points';
+                        updateModeButtonText();
+                        return null;
+                    }
                 }
-                
-                // Check WebGL capabilities before creating render target
-                const gl = renderer.getContext();
-                if (!renderer.capabilities.isWebGL2) {
-                    console.error('GPU mode requires WebGL2');
-                    return null;
-                }
-                
-                const floatExtension = renderer.extensions.get('EXT_color_buffer_float') || 
-                                     renderer.extensions.get('WEBGL_color_buffer_float');
-                if (!floatExtension) {
-                    console.error('GPU mode requires floating point render target support');
-                    return null;
-                }
-                
-                const rt = new THREE.WebGLRenderTarget(width, height, {
-                    wrapS: THREE.ClampToEdgeWrapping,
-                    wrapT: THREE.ClampToEdgeWrapping,
-                    minFilter: THREE.NearestFilter,
-                    magFilter: THREE.NearestFilter,
-                    type: THREE.FloatType,
-                    format: THREE.RGBAFormat,
-                    depthBuffer: false,
-                    stencilBuffer: false
-                });
-                
-                // Validate render target creation
-                const prevTarget = renderer.getRenderTarget();
-                renderer.setRenderTarget(rt);
-                const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-                renderer.setRenderTarget(prevTarget);
-                
-                if (status !== gl.FRAMEBUFFER_COMPLETE) {
-                    console.error('GPU render target creation failed:', status);
-                    rt.dispose();
-                    return null;
-                }
-                
-                rt._texWidth = width;
-                rt._texHeight = height;
-                gpuSampleTarget = rt;
-                return rt;
-            }
 
             // Render a fullscreen quad into the sample target. Fragment shader generates
             // random samples (r,theta,phi), computes position and psi, and writes (x,y,z,psi)
@@ -428,170 +584,190 @@
             // - Ensure rejection loop always produces a sample (fallback to uniform sampling if needed)
             // - Improve random function for better distribution
             // - Add debug output for shader compilation
-            const gpuSampleFragShader = `
-uniform float uN, uL, uM;
-uniform sampler2D uRadialLUT;
-uniform float uLUTSize, uMaxPsi2, uNumPoints;
-uniform vec2 uResolution;
-uniform float uSeed;
+                // Create WebGPU/WebGL compatible shader material for orbital sampling
+                function createGPUSamplingMaterial(n, l, m, lutTexture, lutSize, maxPsi2, numPoints, resolution, seed) {
+                    // Fragment shader compatible with both WebGL and WebGPU
+                    const fragmentShader = `
+                    uniform float uN, uL, uM;
+                    uniform sampler2D uRadialLUT;
+                    uniform float uLUTSize, uMaxPsi2, uNumPoints;
+                    uniform vec2 uResolution;
+                    uniform float uSeed;
 
-float random(vec2 st) {
-    return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
-}
-
-// Better random function with improved distribution
-float random2(vec2 st, float seed) {
-    return fract(sin(dot(st.xy + seed, vec2(12.9898, 78.233))) * 43758.5453123);
-}
-
-vec3 sphericalToCartesian(float r, float theta, float phi) {
-    return vec3(r * sin(theta) * cos(phi), r * sin(theta) * sin(phi), r * cos(theta));
-}
-
-float getRadial(float r, float n, float l) {
-    float x = 2.0 * r / n;
-    // Proper scaling based on actual LUT range
-    vec2 texCoord = vec2(clamp(x / 20.0, 0.0, 1.0), 0.0);
-    return texture(uRadialLUT, texCoord).r;
-}
-
-float getAngular(float theta, float phi, float l, float m) {
-    if (l == 0.0) return 1.0;
-    else if (l == 1.0) {
-        if (m == 0.0) return cos(theta);
-        else if (m == 1.0) return sin(theta) * cos(phi);
-        else return sin(theta) * sin(phi);
-    } else if (l == 2.0) {
-        float ct = cos(theta), st = sin(theta);
-        if (m == 0.0) return 1.5 * ct * ct - 0.5;
-        else if (m == 1.0) return -1.732 * st * ct * cos(phi);
-        else if (m == -1.0) return 1.732 * st * ct * sin(phi);
-        else if (m == 2.0) return 0.866 * st * st * cos(2.0 * phi);
-        else return 0.866 * st * st * sin(2.0 * phi);
-    }
-    return 0.0;
-}
-
-void main() {
-    vec2 uv = gl_FragCoord.xy / uResolution;
-    float idx = uv.x + uv.y * uResolution.x;
-    if (idx >= uNumPoints) discard;
-
-    vec2 baseSeed = uv + vec2(uSeed);
-    float psi = 0.0;
-    vec3 pos = vec3(0.0);
-    bool found = false;
-
-    // Rejection sampling loop with fallback
-    for (int attempt = 0; attempt < 100; attempt++) {
-        float attemptSeed = float(attempt);
-        float r = random2(baseSeed, attemptSeed) * 30.0;
-        float theta = acos(2.0 * random2(baseSeed, attemptSeed + 1.0) - 1.0);
-        float phi = random2(baseSeed, attemptSeed + 2.0) * 6.283185;
-
-        float radial = getRadial(r, uN, uL);
-        float angular = getAngular(theta, phi, uL, uM);
-        psi = radial * angular;
-        float psi2 = psi * psi;
-
-        if (random2(baseSeed, attemptSeed + 3.0) < psi2 / uMaxPsi2) {
-            pos = sphericalToCartesian(r, theta, phi);
-            found = true;
-            break;
-        }
-    }
-
-    // Fallback: uniform sampling if rejection fails
-    if (!found) {
-        float r = random2(baseSeed, 100.0) * 30.0;
-        float theta = acos(2.0 * random2(baseSeed, 101.0) - 1.0);
-        float phi = random2(baseSeed, 102.0) * 6.283185;
-        pos = sphericalToCartesian(r, theta, phi);
-        psi = getRadial(r, uN, uL) * getAngular(theta, phi, uL, uM);
-    }
-
-    gl_FragColor = vec4(pos, psi);
-}
-`;
-
-            // Update renderGPUSamples to log shader compilation errors
-            function renderGPUSamples(n, l, m, numPoints) {
-                // Ensure LUT exists for current n,l (cache per n,l)
-                const lutKey = `${n}_${l}`;
-                if (!radialLUTCache[lutKey]) radialLUTCache[lutKey] = createRadialLUT(n, l, 1024);
-                gpuRadialLUT = radialLUTCache[lutKey];
-                gpuLUTSize = 1024;
-
-                const rt = createGPUSampleTarget(numPoints);
-                if (!rt) {
-                    console.error('Failed to create GPU sample target, falling back to points mode');
-                    renderMode = 'points';
-                    updateModeButtonText();
-                    return null;
-                }
-                const width = rt._texWidth, height = rt._texHeight;
-
-                // Build quad scene if not present
-                if (!gpuQuadScene) {
-                    gpuQuadScene = new THREE.Scene();
-                } else {
-                    // dispose previous quad mesh material if any
-                    if (gpuQuadScene.children.length) {
-                        const old = gpuQuadScene.children[0];
-                        old.material.dispose();
-                        gpuQuadScene.remove(old);
+                    float random(vec2 st) {
+                        return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
                     }
-                }
 
-                const quadGeom = new THREE.PlaneBufferGeometry(2, 2);
-                const quadMat = new THREE.ShaderMaterial({
-                    uniforms: {
+                    // Better random function with improved distribution
+                    float random2(vec2 st, float seed) {
+                        return fract(sin(dot(st.xy + seed, vec2(12.9898, 78.233))) * 43758.5453123);
+                    }
+
+                    vec3 sphericalToCartesian(float r, float theta, float phi) {
+                        return vec3(r * sin(theta) * cos(phi), r * sin(theta) * sin(phi), r * cos(theta));
+                    }
+
+                    float getRadial(float r, float n, float l) {
+                        float x = 2.0 * r / n;
+                        // Proper scaling based on actual LUT range
+                        vec2 texCoord = vec2(clamp(x / 20.0, 0.0, 1.0), 0.0);
+                        return texture(uRadialLUT, texCoord).r;
+                    }
+
+                    float getAngular(float theta, float phi, float l, float m) {
+                        if (l == 0.0) return 1.0;
+                        else if (l == 1.0) {
+                            if (m == 0.0) return cos(theta);
+                            else if (m == 1.0) return sin(theta) * cos(phi);
+                            else return sin(theta) * sin(phi);
+                        } else if (l == 2.0) {
+                            float ct = cos(theta), st = sin(theta);
+                            if (m == 0.0) return 1.5 * ct * ct - 0.5;
+                            else if (m == 1.0) return -1.732 * st * ct * cos(phi);
+                            else if (m == -1.0) return 1.732 * st * ct * sin(phi);
+                            else if (m == 2.0) return 0.866 * st * st * cos(2.0 * phi);
+                            else return 0.866 * st * st * sin(2.0 * phi);
+                        }
+                        return 0.0;
+                    }
+
+                    void main() {
+                        vec2 uv = gl_FragCoord.xy / uResolution;
+                        float idx = uv.x + uv.y * uResolution.x;
+                        if (idx >= uNumPoints) discard;
+
+                        vec2 baseSeed = uv + vec2(uSeed);
+                        float psi = 0.0;
+                        vec3 pos = vec3(0.0);
+                        bool found = false;
+
+                        // Rejection sampling loop with fallback
+                        for (int attempt = 0; attempt < 100; attempt++) {
+                            float attemptSeed = float(attempt);
+                            float r = random2(baseSeed, attemptSeed) * 30.0;
+                            float theta = acos(2.0 * random2(baseSeed, attemptSeed + 1.0) - 1.0);
+                            float phi = random2(baseSeed, attemptSeed + 2.0) * 6.283185;
+
+                            float radial = getRadial(r, uN, uL);
+                            float angular = getAngular(theta, phi, uL, uM);
+                            psi = radial * angular;
+                            float psi2 = psi * psi;
+
+                            if (random2(baseSeed, attemptSeed + 3.0) < psi2 / uMaxPsi2) {
+                                pos = sphericalToCartesian(r, theta, phi);
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        // Fallback: uniform sampling if rejection fails
+                        if (!found) {
+                            float r = random2(baseSeed, 100.0) * 30.0;
+                            float theta = acos(2.0 * random2(baseSeed, 101.0) - 1.0);
+                            float phi = random2(baseSeed, 102.0) * 6.283185;
+                            pos = sphericalToCartesian(r, theta, phi);
+                            psi = getRadial(r, uN, uL) * getAngular(theta, phi, uL, uM);
+                        }
+
+                        gl_FragColor = vec4(pos, psi);
+                    }
+                    `;
+
+                    const uniforms = {
                         uN: { value: n },
                         uL: { value: l },
                         uM: { value: m },
-                        uRadialLUT: { value: radialLUTCache[`${n}_${l}`] },
-                        uLUTSize: { value: gpuLUTSize }, // Use consistent LUT size
-                        uMaxPsi2: { value: estimateMaxPsi2(n, l, m) }, // precompute max |psi|^2
+                        uRadialLUT: { value: lutTexture },
+                        uLUTSize: { value: lutSize },
+                        uMaxPsi2: { value: maxPsi2 },
                         uNumPoints: { value: numPoints },
-                        uResolution: { value: new THREE.Vector2(gpuSampleTarget.width, gpuSampleTarget.height) },
-                        uSeed: { value: Math.random() }
-                    },
-                    vertexShader: `
-                        varying vec2 vUv;
-                        void main() {
-                            vUv = uv;
-                            gl_Position = vec4(position, 1.0);
-                        }
-                    `,
-                    fragmentShader: gpuSampleFragShader // updated
-                });
+                        uResolution: { value: resolution },
+                        uSeed: { value: seed }
+                    };
 
-                const quad = new THREE.Mesh(quadGeom, quadMat);
-                gpuQuadScene.add(quad);
-
-                // render quad into target
-                const prevRenderTarget = renderer.getRenderTarget();
-                renderer.setRenderTarget(rt);
-                renderer.clear();
-                const orthoCamera = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
-                renderer.render(gpuQuadScene, orthoCamera);
-                renderer.setRenderTarget(prevRenderTarget);
-
-                // Check for compilation errors after rendering (when shaders are actually compiled)
-                if (quadMat.program) {
-                    const gl = renderer.getContext();
-                    const program = quadMat.program.program;
-                    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-                        console.error('GPU Shader link error:', gl.getProgramInfoLog(program));
-                    }
-                    const vertShader = gl.getShaderInfoLog(quadMat.program.vertexShader);
-                    const fragShader = gl.getShaderInfoLog(quadMat.program.fragmentShader);
-                    if (vertShader) console.error('GPU Vertex shader compile error:', vertShader);
-                    if (fragShader) console.error('GPU Fragment shader compile error:', fragShader);
+                    // Create shader material - works for both WebGL and WebGPU
+                    return new THREE.ShaderMaterial({
+                        uniforms: uniforms,
+                        vertexShader: `
+                            void main() {
+                                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                            }
+                        `,
+                        fragmentShader: fragmentShader,
+                        side: THREE.DoubleSide
+                    });
                 }
 
-                return rt;
-            }
+                // Update renderGPUSamples to use the new material creation function
+                function renderGPUSamples(n, l, m, numPoints) {
+                    // Ensure LUT exists for current n,l (cache per n,l)
+                    const lutKey = `${n}_${l}`;
+                    if (!radialLUTCache[lutKey]) radialLUTCache[lutKey] = createRadialLUT(n, l, 1024);
+                    gpuRadialLUT = radialLUTCache[lutKey];
+                    gpuLUTSize = 1024;
+
+                    const rt = createGPUSampleTarget(numPoints);
+                    if (!rt) {
+                        console.error('Failed to create GPU sample target, falling back to points mode');
+                        renderMode = 'points';
+                        updateModeButtonText();
+                        return null;
+                    }
+                    const width = rt._texWidth, height = rt._texHeight;
+
+                    // Build quad scene if not present
+                    if (!gpuQuadScene) {
+                        gpuQuadScene = new THREE.Scene();
+                    } else {
+                        // dispose previous quad mesh material if any
+                        if (gpuQuadScene.children.length) {
+                            const old = gpuQuadScene.children[0];
+                            old.material.dispose();
+                            gpuQuadScene.remove(old);
+                        }
+                    }
+
+                    // Use PlaneGeometry instead of deprecated PlaneBufferGeometry
+                    const quadGeom = new THREE.PlaneGeometry(2, 2);
+                    
+                    // Create the material using our new function
+                    const quadMat = createGPUSamplingMaterial(
+                        n, l, m,
+                        radialLUTCache[lutKey],
+                        gpuLUTSize,
+                        estimateMaxPsi2(n, l, m),
+                        numPoints,
+                        new THREE.Vector2(width, height),
+                        Math.random()
+                    );
+
+                    const quad = new THREE.Mesh(quadGeom, quadMat);
+                    gpuQuadScene.add(quad);
+
+                    // render quad into target
+                    const prevRenderTarget = renderer.getRenderTarget();
+                    renderer.setRenderTarget(rt);
+                    renderer.clear();
+                    const orthoCamera = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+                    renderer.render(gpuQuadScene, orthoCamera);
+                    renderer.setRenderTarget(prevRenderTarget);
+
+                    // Check for compilation errors (WebGL only)
+                    if (gpuBackend !== 'WebGPU' && quadMat.program) {
+                        const gl = renderer.getContext();
+                        const program = quadMat.program.program;
+                        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                            console.error('GPU Shader link error:', gl.getProgramInfoLog(program));
+                        }
+                        const vertShader = gl.getShaderInfoLog(quadMat.program.vertexShader);
+                        const fragShader = gl.getShaderInfoLog(quadMat.program.fragmentShader);
+                        if (vertShader) console.error('GPU Vertex shader compile error:', vertShader);
+                        if (fragShader) console.error('GPU Fragment shader compile error:', fragShader);
+                    }
+
+                    console.log(`✅ GPU orbital sampling completed using ${gpuBackend}`);
+                    return rt;
+                }
 
             // Create a Points mesh whose vertex shader samples the gpuSampleTarget to get position + psi
             function createGPUPointsMesh(sampleTarget, numPoints) {
@@ -1399,35 +1575,69 @@ void main() {
             // Initial generation
             regenerateOrbitalGeometry();
             animate();
-        };
 
-        // Remove and dispose any current orbital objects and GPU targets
-        function clearOrbital() {
-            // remove orbital-marked children
-            scene.children.slice().forEach(child => {
-                if (child.userData && child.userData.isOrbital) {
-                    if (child.type === 'Group') {
-                        child.children.forEach(ch => { ch.geometry?.dispose?.(); ch.material?.dispose?.(); });
-                    } else {
-                        child.geometry?.dispose?.();
-                        child.material?.dispose?.();
+            // Remove and dispose any current orbital objects and GPU targets
+            function clearOrbital() {
+                // remove orbital-marked children
+                scene.children.slice().forEach(child => {
+                    if (child.userData && child.userData.isOrbital) {
+                        if (child.type === 'Group') {
+                            child.children.forEach(ch => { ch.geometry?.dispose?.(); ch.material?.dispose?.(); });
+                        } else {
+                            child.geometry?.dispose?.();
+                            child.material?.dispose?.();
+                        }
+                        scene.remove(child);
                     }
-                    scene.remove(child);
+                });
+                // dispose GPU resources
+                if (gpuSampleMesh) {
+                    gpuSampleMesh.geometry?.dispose?.();
+                    gpuSampleMesh.material?.dispose?.();
+                    scene.remove(gpuSampleMesh);
+                    gpuSampleMesh = null;
                 }
-            });
-            // dispose GPU resources
-            if (gpuSampleMesh) {
-                gpuSampleMesh.geometry?.dispose?.();
-                gpuSampleMesh.material?.dispose?.();
-                scene.remove(gpuSampleMesh);
-                gpuSampleMesh = null;
+                if (gpuSampleTarget) {
+                    gpuSampleTarget.dispose?.();
+                    gpuSampleTarget = null;
+                }
+                // clear cached current orbital reference
+                currentOrbital = null;
             }
-            if (gpuSampleTarget) {
-                gpuSampleTarget.dispose?.();
-                gpuSampleTarget = null;
+
+            } catch (error) {
+                console.error('❌ Application initialization failed:', error);
+                // Show error message to user
+                const errorDiv = document.createElement('div');
+                errorDiv.style.cssText = `
+                    position: fixed;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    background: rgba(220, 53, 69, 0.9);
+                    color: white;
+                    padding: 2rem;
+                    border-radius: 0.5rem;
+                    font-family: monospace;
+                    z-index: 1000;
+                    max-width: 80%;
+                    text-align: center;
+                `;
+                errorDiv.innerHTML = `
+                    <h3>⚠️ Application Error</h3>
+                    <p>Failed to initialize the orbital simulator.</p>
+                    <p><small>Error: ${error.message}</small></p>
+                    <p><small>Please try a different browser or check WebGL/WebGPU support.</small></p>
+                `;
+                document.body.appendChild(errorDiv);
             }
-            // clear cached current orbital reference
-            currentOrbital = null;
+        }
+
+        // Initialize the application when page loads
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', main);
+        } else {
+            main();
         }
     </script>
 </body>

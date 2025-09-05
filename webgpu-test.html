@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU Support Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 2rem;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        .status {
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 0.5rem;
+            font-weight: bold;
+        }
+        .supported {
+            background: rgba(34, 197, 94, 0.2);
+            border: 1px solid #22c55e;
+            color: #22c55e;
+        }
+        .not-supported {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid #ef4444;
+            color: #ef4444;
+        }
+        .info {
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid #3b82f6;
+            color: #3b82f6;
+        }
+        pre {
+            background: #2a2a2a;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            overflow: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>🚀 WebGPU Support Test for Electron Orbital Simulator</h1>
+    
+    <div id="webgpu-status" class="status">
+        Testing WebGPU support...
+    </div>
+    
+    <div id="webgl-status" class="status">
+        Testing WebGL support...
+    </div>
+    
+    <div id="browser-info" class="status info">
+        <strong>Browser:</strong> <span id="browser-name"></span><br>
+        <strong>User Agent:</strong> <span id="user-agent"></span>
+    </div>
+    
+    <h2>Test Results</h2>
+    <pre id="test-results"></pre>
+    
+    <h2>Recommended Setup</h2>
+    <div id="recommendations"></div>
+
+    <script>
+        async function testWebGPUSupport() {
+            const results = [];
+            const webgpuStatus = document.getElementById('webgpu-status');
+            const webglStatus = document.getElementById('webgl-status');
+            const testResults = document.getElementById('test-results');
+            const recommendations = document.getElementById('recommendations');
+            
+            // Browser info
+            document.getElementById('browser-name').textContent = navigator.userAgent.split(' ').find(s => s.includes('Chrome')) || 'Unknown';
+            document.getElementById('user-agent').textContent = navigator.userAgent;
+            
+            // Test WebGPU
+            results.push('=== WebGPU Support Test ===');
+            
+            if (!navigator.gpu) {
+                webgpuStatus.textContent = '❌ WebGPU not supported - navigator.gpu not available';
+                webgpuStatus.className = 'status not-supported';
+                results.push('❌ navigator.gpu: Not available');
+                results.push('   This browser does not support WebGPU');
+            } else {
+                results.push('✅ navigator.gpu: Available');
+                
+                try {
+                    const adapter = await navigator.gpu.requestAdapter();
+                    if (!adapter) {
+                        webgpuStatus.textContent = '❌ WebGPU adapter not available';
+                        webgpuStatus.className = 'status not-supported';
+                        results.push('❌ GPU Adapter: Failed to get adapter');
+                    } else {
+                        results.push('✅ GPU Adapter: Available');
+                        results.push(`   Vendor: ${adapter.info?.vendor || 'Unknown'}`);
+                        results.push(`   Architecture: ${adapter.info?.architecture || 'Unknown'}`);
+                        
+                        try {
+                            const device = await adapter.requestDevice();
+                            webgpuStatus.textContent = '✅ WebGPU fully supported and functional!';
+                            webgpuStatus.className = 'status supported';
+                            results.push('✅ GPU Device: Successfully created');
+                            results.push(`   Features: ${Array.from(device.features).join(', ') || 'None'}`);
+                            results.push(`   Max Texture Dimension 2D: ${device.limits.maxTextureDimension2D}`);
+                            results.push(`   Max Buffer Size: ${device.limits.maxBufferSize}`);
+                        } catch (error) {
+                            webgpuStatus.textContent = '⚠️ WebGPU adapter available but device creation failed';
+                            webgpuStatus.className = 'status not-supported';
+                            results.push('❌ GPU Device: Failed to create device');
+                            results.push(`   Error: ${error.message}`);
+                        }
+                    }
+                } catch (error) {
+                    webgpuStatus.textContent = '⚠️ WebGPU available but adapter request failed';
+                    webgpuStatus.className = 'status not-supported';
+                    results.push('❌ GPU Adapter: Request failed');
+                    results.push(`   Error: ${error.message}`);
+                }
+            }
+            
+            results.push('');
+            results.push('=== WebGL Support Test ===');
+            
+            // Test WebGL2
+            const canvas = document.createElement('canvas');
+            const webgl2 = canvas.getContext('webgl2');
+            if (webgl2) {
+                webglStatus.textContent = '✅ WebGL2 supported (fallback available)';
+                webglStatus.className = 'status supported';
+                results.push('✅ WebGL2: Available');
+                results.push(`   Vendor: ${webgl2.getParameter(webgl2.VENDOR)}`);
+                results.push(`   Renderer: ${webgl2.getParameter(webgl2.RENDERER)}`);
+                results.push(`   Version: ${webgl2.getParameter(webgl2.VERSION)}`);
+                
+                // Test float texture support
+                const floatExt = webgl2.getExtension('EXT_color_buffer_float') || 
+                                webgl2.getExtension('WEBGL_color_buffer_float');
+                results.push(`   Float textures: ${floatExt ? '✅ Supported' : '❌ Not supported'}`);
+                
+            } else {
+                const webgl1 = canvas.getContext('webgl');
+                if (webgl1) {
+                    webglStatus.textContent = '⚠️ Only WebGL1 available (limited functionality)';
+                    webglStatus.className = 'status info';
+                    results.push('⚠️ WebGL2: Not available');
+                    results.push('✅ WebGL1: Available (limited)');
+                } else {
+                    webglStatus.textContent = '❌ No WebGL support';
+                    webglStatus.className = 'status not-supported';
+                    results.push('❌ WebGL: Not available');
+                }
+            }
+            
+            testResults.textContent = results.join('\n');
+            
+            // Recommendations
+            const hasWebGPU = navigator.gpu && webgpuStatus.className.includes('supported');
+            const hasWebGL2 = !!webgl2;
+            const hasFloatTextures = webgl2 && (webgl2.getExtension('EXT_color_buffer_float') || 
+                                               webgl2.getExtension('WEBGL_color_buffer_float'));
+            
+            let recommendationHTML = '';
+            if (hasWebGPU) {
+                recommendationHTML = `
+                    <div class="status supported">
+                        🎉 Your browser supports WebGPU! The Electron Orbital Simulator will use:
+                        <br>• <strong>Primary:</strong> WebGPU for maximum performance
+                        <br>• <strong>Fallback:</strong> WebGL2 if WebGPU fails
+                        <br>• All GPU-accelerated orbital sampling features available
+                    </div>
+                `;
+            } else if (hasWebGL2 && hasFloatTextures) {
+                recommendationHTML = `
+                    <div class="status info">
+                        ℹ️ WebGPU not available, but WebGL2 is supported. The simulator will use:
+                        <br>• <strong>Primary:</strong> WebGL2 for GPU-accelerated orbital sampling
+                        <br>• <strong>Performance:</strong> Good, but not as optimal as WebGPU
+                        <br>• To use WebGPU, try Chrome Canary with --enable-unsafe-webgpu flag
+                    </div>
+                `;
+            } else {
+                recommendationHTML = `
+                    <div class="status not-supported">
+                        ⚠️ Limited graphics support detected. The simulator will use:
+                        <br>• <strong>CPU rendering only</strong> (slower performance)
+                        <br>• Consider upgrading to a browser with WebGL2/WebGPU support
+                        <br>• Chrome, Firefox, or Edge recommended
+                    </div>
+                `;
+            }
+            
+            recommendations.innerHTML = recommendationHTML;
+        }
+        
+        // Run tests when page loads
+        testWebGPUSupport().catch(error => {
+            console.error('Test failed:', error);
+            document.getElementById('test-results').textContent = `Test failed: ${error.message}`;
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU Three.js Integration Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 1000;
+        }
+        #canvas-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <div>Renderer: <span id="renderer-type">Initializing...</span></div>
+        <div>Status: <span id="status">Loading...</span></div>
+        <div><small>This tests the WebGPU renderer initialization from the orbital simulator</small></div>
+    </div>
+    <div id="canvas-container">
+        <canvas id="test-canvas"></canvas>
+    </div>
+
+    <!-- Use the same module approach as the main application -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.skypack.dev/three@0.160.0",
+                "three/addons/": "https://cdn.skypack.dev/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        // Test script to verify WebGPU integration works
+        try {
+            const { default: WebGPURenderer } = await import('three/addons/renderers/webgpu/WebGPURenderer.js');
+            const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
+            
+            // Import Three.js dynamically to handle loading issues
+            const THREE = await import('three');
+            
+            console.log('✅ Three.js modules loaded successfully');
+            document.getElementById('status').textContent = 'Three.js loaded';
+            
+            // Initialize renderer (same logic as main app)
+            async function initializeRenderer() {
+                const canvas = document.getElementById('test-canvas');
+                let renderer = null;
+                let rendererType = 'unknown';
+
+                // Try WebGPU first
+                if (navigator.gpu) {
+                    try {
+                        console.log('Attempting WebGPU initialization...');
+                        renderer = new WebGPURenderer({ 
+                            canvas: canvas,
+                            alpha: true,
+                            antialias: true
+                        });
+                        await renderer.init();
+                        rendererType = 'WebGPU';
+                        console.log('✅ WebGPU renderer initialized successfully');
+                    } catch (error) {
+                        console.warn('❌ WebGPU initialization failed:', error);
+                        renderer = null;
+                    }
+                } else {
+                    console.log('WebGPU not supported in this browser');
+                }
+
+                // Fallback to WebGL2
+                if (!renderer) {
+                    try {
+                        console.log('Falling back to WebGL2...');
+                        const context = canvas.getContext('webgl2');
+                        if (context) {
+                            renderer = new THREE.WebGLRenderer({
+                                canvas: canvas,
+                                context: context,
+                                alpha: true,
+                                antialias: true
+                            });
+                            rendererType = 'WebGL2';
+                            console.log('✅ WebGL2 renderer initialized successfully');
+                        } else {
+                            throw new Error('WebGL2 context not available');
+                        }
+                    } catch (error) {
+                        console.warn('❌ WebGL2 initialization failed:', error);
+                    }
+                }
+
+                // Final fallback to WebGL1
+                if (!renderer) {
+                    try {
+                        console.log('Final fallback to WebGL1...');
+                        renderer = new THREE.WebGLRenderer({
+                            canvas: canvas,
+                            alpha: true,
+                            antialias: true
+                        });
+                        rendererType = 'WebGL1';
+                        console.log('✅ WebGL1 renderer initialized successfully');
+                    } catch (error) {
+                        console.error('❌ All renderer initialization attempts failed:', error);
+                        throw new Error('No compatible renderer found');
+                    }
+                }
+
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                
+                return { renderer, rendererType };
+            }
+
+            // Test the renderer
+            const { renderer, rendererType } = await initializeRenderer();
+            document.getElementById('renderer-type').textContent = rendererType;
+            document.getElementById('status').textContent = 'Renderer initialized';
+
+            // Create a simple test scene
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            // Add some test geometry to verify rendering
+            const geometry = new THREE.BoxGeometry(1, 1, 1);
+            const material = new THREE.MeshBasicMaterial({ 
+                color: 0x00ff00,
+                wireframe: true 
+            });
+            const cube = new THREE.Mesh(geometry, material);
+            scene.add(cube);
+
+            camera.position.z = 5;
+
+            // Add controls
+            const controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+
+            // Animation loop
+            function animate() {
+                requestAnimationFrame(animate);
+                
+                cube.rotation.x += 0.01;
+                cube.rotation.y += 0.01;
+                
+                controls.update();
+                renderer.render(scene, camera);
+            }
+
+            animate();
+            
+            document.getElementById('status').textContent = `✅ ${rendererType} working!`;
+            console.log(`✅ Test completed successfully with ${rendererType}`);
+
+        } catch (error) {
+            console.error('❌ Test failed:', error);
+            document.getElementById('renderer-type').textContent = 'Failed';
+            document.getElementById('status').textContent = `Error: ${error.message}`;
+        }
+    </script>
+</body>
+</html>
