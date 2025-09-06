@@ -191,7 +191,7 @@
             <div id="settings-panel">
                 <div class="slider-container">
                     <label for="density-slider">Density: <span id="density-value">50000</span> points</label>
-                    <input type="range" id="density-slider" min="10000" max="150000" value="50000" step="10000">
+                    <input type="range" id="density-slider" min="10000" max="300000" value="50000" step="10000">
                 </div>
                 <button id="adaptive-toggle" class="orbital-button">Adaptive Off</button>
                 <button id="mode-toggle" class="orbital-button">Mode: Instanced</button>
@@ -240,6 +240,9 @@
             controls.enableDamping = true;
             controls.dampingFactor = 0.25;
             controls.enableZoom = true;
+            // Prevent snapping/scrolling from ending too close or too far
+            controls.minDistance = 5;
+            controls.maxDistance = 200;
 
             // --- Lighting ---
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
@@ -307,7 +310,7 @@
             let impostorEnabled = false; // toggles impostor rendering for instanced mode (billboard quads instead of spheres)
             // Points mode reusable buffers
             let pointsCache = { geometry: null, material: null, capacity: 0 };
-            const maxRadius = 21;
+            const maxRadius = 41;
             const colorPositive = new THREE.Color(0x2e64e1); // A vibrant blue
             const colorNegative = new THREE.Color(0xff6666); // A vibrant red
             const ACCEPTANCE_SCALE = 130; // Acceptance probability scale factor
@@ -334,7 +337,7 @@
                 computeBindGroup: null,
                 sampleData: null,
                 numPoints: 0,
-                uniforms: { projection: new Float32Array(16), view: new Float32Array(16), pointSize: 0.08 },
+                uniforms: { projection: new Float32Array(16), view: new Float32Array(16), pointSize: 0.001 },
                 _uniformStaging: new Float32Array(16 + 16 + 4),
                 _computeStaging: new ArrayBuffer(64), // for Params struct
                 camera: { distance: 40, yaw: 0.8, pitch: 0.6, dragging: false, lastX:0, lastY:0 }
@@ -418,15 +421,18 @@ struct VSOut {
   );
   let wpos = uniforms.view * vec4<f32>(p.xyz, 1.0);
   var clip = uniforms.projection * wpos;
-  let size = uniforms.pointSize.x;
-  let offs = quad[vid] * size * (20.0 / max(0.1, -wpos.z));
+  let baseSize = uniforms.pointSize.x;      // desired point size
+  let pxScale = uniforms.pointSize.y;       // pixel scaling factor
+  let amp = clamp(abs(p.w) * uniforms.pointSize.w, 0.0, 1.0);
+  let sizeAmp = mix(0.6, 1.3, amp);
+  let offs = quad[vid] * baseSize * pxScale * sizeAmp / max(0.1, -wpos.z);
   let xy = clip.xy + offs;
   clip = vec4<f32>(xy, clip.zw);
   out.position = clip;
   let colorPos = vec3<f32>(0.18, 0.39, 0.88);
   let colorNeg = vec3<f32>(1.0, 0.4, 0.4);
   out.color = select(colorNeg, colorPos, p.w >= 0.0);
-  out.alpha = 0.65;
+  out.alpha = uniforms.pointSize.z * amp;
   return out;
 }
 
@@ -609,7 +615,7 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
                 webgpu.canvas.addEventListener('mousedown', e=>{ webgpu.camera.dragging=true; webgpu.camera.lastX=e.clientX; webgpu.camera.lastY=e.clientY; });
                 window.addEventListener('mouseup', ()=> webgpu.camera.dragging=false);
                 window.addEventListener('mousemove', e=>{ if(!webgpu.camera.dragging) return; const dx=(e.clientX-webgpu.camera.lastX)*0.005; const dy=(e.clientY-webgpu.camera.lastY)*0.005; webgpu.camera.yaw+=dx; webgpu.camera.pitch=Math.max(-1.2, Math.min(1.2, webgpu.camera.pitch+dy)); webgpu.camera.lastX=e.clientX; webgpu.camera.lastY=e.clientY; });
-                webgpu.canvas.addEventListener('wheel', e=>{ webgpu.camera.distance = Math.max(2, Math.min(60, webgpu.camera.distance + e.deltaY*0.01)); });
+                webgpu.canvas.addEventListener('wheel', e=>{ webgpu.camera.distance = Math.max(5, Math.min(150, webgpu.camera.distance + e.deltaY*0.01)); });
                 webgpu.initialized = true;
                 return true;
             }
@@ -765,17 +771,29 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
                 const w = Math.floor(canvas.clientWidth * dpr);
                 const h = Math.floor(canvas.clientHeight * dpr);
                 if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-                mat4Perspective(webgpu.uniforms.projection, camera.fov * Math.PI/180, w/h, 0.1, 1000);
+                const fovy = camera.fov * Math.PI/180;
+                mat4Perspective(webgpu.uniforms.projection, fovy, w/h, 0.1, 1000);
                 updateWebGPUCamera();
                 const u = webgpu._uniformStaging;
                 u.set(webgpu.uniforms.projection, 0);
                 u.set(webgpu.uniforms.view, 16);
-                u[32] = webgpu.uniforms.pointSize;
+                // Compute pixel-accurate scale to match Three PointsMaterial
+                const pxScale = dpr * (0.5 * h) / Math.tan(0.5 * fovy);
+                // Amplitude scaling derived from maxima of R and |Y|
+                const rk = `${currentOrbitalData.n}_${currentOrbitalData.l}`;
+                const ak = `${currentOrbitalData.l}_${currentOrbitalData.m}`;
+                const radMax = (radialCache[rk] && radialCache[rk].maxR) ? radialCache[rk].maxR : 1;
+                const angMax = Math.sqrt(estimateMaxAngular2(currentOrbitalData.l, currentOrbitalData.m));
+                const ampMax = Math.max(1e-6, radMax * angMax);
+                const alphaBase = 0.7;
+                const ampScale = 0.9 / ampMax;
+                u[32] = webgpu.uniforms.pointSize; // base size
+                u[33] = pxScale;                    // pixel scale
+                u[34] = alphaBase;                  // alpha base
+                u[35] = ampScale;                   // amplitude scale
                 device.queue.writeBuffer(webgpu.uniformBuffer, 0, u.buffer);
                 ensureWebGPUParticles();
                 // Update compute uniforms (sizes, seed, frame, maxRadius, l,m)
-                const rk = `${currentOrbitalData.n}_${currentOrbitalData.l}`;
-                const ak = `${currentOrbitalData.l}_${currentOrbitalData.m}`;
                 const rSize = radialCache[rk].invCdf.image.width >>> 0;
                 const tSize = angularCache[ak].thetaSize >>> 0;
                 const pSize = angularCache[ak].phiSize >>> 0;
@@ -2352,7 +2370,11 @@ void main() {
             }
             function computeSnap(axis){
                 const target = controls.target.clone();
-                const dist = camera.position.clone().sub(target).length() || 20;
+                // Choose a fit distance so the orbital comfortably fits in view
+                const fov = camera.fov * Math.PI / 180;
+                const margin = 1.25; // 25% padding around the orbital
+                const fitDist = (maxRadius / Math.tan(fov * 0.5)) * margin;
+                const dist = fitDist;
                 let up = new THREE.Vector3(0,1,0);
                 let pos = new THREE.Vector3();
                 if (axis === 'x') { pos.set(dist, 0, 0); up.set(0,1,0); }
