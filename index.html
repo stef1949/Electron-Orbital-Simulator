@@ -125,6 +125,31 @@
             color: #a0aec0;
             z-index: 10;
         }
+        /* Orientation overlay */
+        #orientation-overlay {
+            position: fixed;
+            left: 12px;
+            bottom: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.4rem;
+            z-index: 20;
+            pointer-events: none; /* canvas non-interactive; buttons enabled individually */
+        }
+        #orientation-canvas {
+            width: 96px; height: 96px;
+            border-radius: 10px;
+            background: rgba(0,0,0,0.06);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+        }
+        #orientation-buttons { display: flex; gap: 0.25rem; pointer-events: auto; }
+        .orient-btn { 
+            padding: 0.2rem 0.5rem; border: none; border-radius: 6px;
+            background: #333; color: #fff; font-weight: 700; font-size: 0.8rem; cursor: pointer;
+        }
+        .orient-btn:hover { background: #777; }
+        .orient-btn:active { transform: translateY(1px); }
     </style>
 </head>
 <body>
@@ -177,6 +202,15 @@
                 <button id="screenshot-button" class="orbital-button">Save PNG</button>
             </div>
             <div id="fps-counter"> FPS:0 </div>
+            <div id="orientation-overlay">
+                <canvas id="orientation-canvas" width="140" height="140"></canvas>
+                <div id="orientation-buttons">
+                    <button id="snap-x" class="orient-btn">X</button>
+                    <button id="snap-y" class="orient-btn">Y</button>
+                    <button id="snap-z" class="orient-btn">Z</button>
+                    <button id="reset-orient" class="orient-btn">Reset</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -213,6 +247,45 @@
             const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
             directionalLight.position.set(0, 1, 1);
             scene.add(directionalLight);
+
+            // --- Orientation overlay (bottom-right) ---
+            const orientCanvas = document.getElementById('orientation-canvas');
+            const orientRenderer = new THREE.WebGLRenderer({ canvas: orientCanvas, alpha: true, antialias: true });
+            orientRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            // Physical buffer size kept small for perf; CSS scales presentation
+            orientRenderer.setSize(140, 140, false);
+            const orientScene = new THREE.Scene();
+            const orientCam = new THREE.PerspectiveCamera(70, 1, 0.1, 20);
+            orientCam.position.set(0, 0, 2.4);
+            // Build a thicker axes gizmo (mesh-based) so it renders bold on WebGL
+            function buildThickAxes(length = 1.3, radius = 0.06, headLength = 0.24, headRadius = 0.12) {
+                const group = new THREE.Group();
+                const segs = 16;
+                function makeAxis(color, axis) {
+                    const shaftLen = Math.max(0.001, length - headLength);
+                    const mat = new THREE.MeshBasicMaterial({ color, toneMapped: false });
+                    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, shaftLen, segs), mat);
+                    const head = new THREE.Mesh(new THREE.ConeGeometry(headRadius, headLength, segs), mat);
+                    if (axis === 'x') {
+                        shaft.rotation.z = Math.PI / 2; shaft.position.x = shaftLen / 2;
+                        head.rotation.z = Math.PI / 2; head.position.x = shaftLen + headLength / 2;
+                    } else if (axis === 'y') {
+                        shaft.position.y = shaftLen / 2;
+                        head.position.y = shaftLen + headLength / 2;
+                    } else { // 'z'
+                        shaft.rotation.x = -Math.PI / 2; shaft.position.z = shaftLen / 2;
+                        head.rotation.x = -Math.PI / 2; head.position.z = shaftLen + headLength / 2;
+                    }
+                    const g = new THREE.Group(); g.add(shaft); g.add(head); return g;
+                }
+                group.add(makeAxis(0xff5555, 'x'));
+                group.add(makeAxis(0x55ff55, 'y'));
+                group.add(makeAxis(0x5588ff, 'z'));
+                return group;
+            }
+            const axesRoot = new THREE.Object3D();
+            axesRoot.add(buildThickAxes(1.35, 0.07, 0.28, 0.14));
+            orientScene.add(axesRoot);
 
             // --- Orbital Visualization ---
             let currentOrbital = null;
@@ -264,7 +337,7 @@
                 uniforms: { projection: new Float32Array(16), view: new Float32Array(16), pointSize: 0.08 },
                 _uniformStaging: new Float32Array(16 + 16 + 4),
                 _computeStaging: new ArrayBuffer(64), // for Params struct
-                camera: { distance: 20, yaw: 0.8, pitch: 0.6, dragging: false, lastX:0, lastY:0 }
+                camera: { distance: 40, yaw: 0.8, pitch: 0.6, dragging: false, lastX:0, lastY:0 }
             };
 
             function mat4Perspective(out, fovy, aspect, near, far) {
@@ -2061,6 +2134,11 @@ void main() {
             const cullButton = document.getElementById('cull-toggle');
             const clearButton = document.getElementById('clear-button');
             const screenshotButton = document.getElementById('screenshot-button'); // new
+            // Orientation buttons
+            const snapXBtn = document.getElementById('snap-x');
+            const snapYBtn = document.getElementById('snap-y');
+            const snapZBtn = document.getElementById('snap-z');
+            const resetOrientBtn = document.getElementById('reset-orient');
 
             // Function to update mode button text (can be called when mode changes due to fallback)
             function updateModeButtonText() {
@@ -2144,8 +2222,15 @@ void main() {
                     }
                 }
                 // Hide/show canvases
-                if (webgpu.canvas) webgpu.canvas.style.display = (renderMode === 'webgpu') ? 'block' : 'none';
-                renderer.domElement.style.visibility = (renderMode === 'webgpu') ? 'hidden' : 'visible';
+                if (webgpu.canvas) {
+                    const on = (renderMode === 'webgpu');
+                    webgpu.canvas.style.display = on ? 'block' : 'none';
+                    webgpu.canvas.style.pointerEvents = on ? 'auto' : 'none';
+                }
+                // Keep WebGL canvas in DOM to capture controls when not in WebGPU
+                const onWebGPU = (renderMode === 'webgpu');
+                renderer.domElement.style.opacity = onWebGPU ? '0' : '1';
+                renderer.domElement.style.pointerEvents = onWebGPU ? 'none' : 'auto';
                 updateModeButtonText();
                 // Update impostor availability
                 if (renderMode === 'instanced') {
@@ -2240,6 +2325,68 @@ void main() {
             }
             // Set initial state
             document.querySelector('[data-orbital="1s"]').classList.add('active');
+
+            // Orientation snaps
+            const initialCamPos = new THREE.Vector3().copy(camera.position);
+            const initialTarget = new THREE.Vector3(0,0,0);
+            // Smooth camera tweening for OrbitControls
+            let camTween = null; let isTransitioning = false;
+            function easeInOutCubic(t){ return t<0.5? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
+            function startCameraTransition(toPos, toTarget, toUp, duration=650){
+                camTween = {
+                    t0: performance.now(), dur: duration,
+                    fromPos: camera.position.clone(), toPos: toPos.clone(),
+                    fromTarget: controls.target.clone(), toTarget: toTarget.clone(),
+                    fromUp: camera.up.clone(), toUp: toUp.clone(),
+                };
+                isTransitioning = true; controls.enabled = false;
+            }
+            // Smooth transition for WebGPU (yaw/pitch/distance)
+            let webgpuTween = null;
+            function shortestAngle(from, to){ let d = to - from; while (d > Math.PI) d -= 2*Math.PI; while (d < -Math.PI) d += 2*Math.PI; return from + d; }
+            function startWebGPUTransition(toYaw, toPitch, toDistance, duration=650){
+                if (!webgpu) return;
+                const from = webgpu.camera;
+                const yawDst = shortestAngle(from.yaw, toYaw);
+                webgpuTween = { t0: performance.now(), dur: duration, fromYaw: from.yaw, toYaw: yawDst, fromPitch: from.pitch, toPitch, fromDist: from.distance, toDist: toDistance };
+            }
+            function computeSnap(axis){
+                const target = controls.target.clone();
+                const dist = camera.position.clone().sub(target).length() || 20;
+                let up = new THREE.Vector3(0,1,0);
+                let pos = new THREE.Vector3();
+                if (axis === 'x') { pos.set(dist, 0, 0); up.set(0,1,0); }
+                else if (axis === 'y') { pos.set(0, dist, 0); up.set(0,0,1); }
+                else { pos.set(0, 0, dist); up.set(0,1,0); }
+                return { pos: target.clone().add(pos), target, up, dist };
+            }
+            function snapTo(axis){
+                const cfg = computeSnap(axis);
+                if (renderMode === 'webgpu'){
+                    // Map axes to yaw/pitch for WebGPU camera model
+                    const YAW_X = Math.PI * 0.5, YAW_Z = 0.0; // +Z is yaw=0
+                    const PITCH_FLAT = 0.0, PITCH_Y = Math.PI * 0.5;
+                    let yaw = YAW_Z, pitch = PITCH_FLAT;
+                    if (axis==='x'){ yaw = YAW_X; pitch = PITCH_FLAT; }
+                    else if (axis==='y'){ yaw = YAW_Z; pitch = PITCH_Y; }
+                    else { yaw = YAW_Z; pitch = PITCH_FLAT; }
+                    startWebGPUTransition(yaw, pitch, cfg.dist);
+                    // Also align the Three camera for overlay consistency
+                    startCameraTransition(cfg.pos, cfg.target, cfg.up, 650);
+                } else {
+                    startCameraTransition(cfg.pos, cfg.target, cfg.up, 650);
+                }
+            }
+            function resetOrientation(){
+                if (renderMode === 'webgpu'){
+                    startWebGPUTransition(0.0, 0.0, webgpu.camera.distance, 650);
+                }
+                startCameraTransition(initialCamPos, initialTarget, new THREE.Vector3(0,1,0), 650);
+            }
+            snapXBtn.addEventListener('click', ()=> snapTo('x'));
+            snapYBtn.addEventListener('click', ()=> snapTo('y'));
+            snapZBtn.addEventListener('click', ()=> snapTo('z'));
+            resetOrientBtn.addEventListener('click', resetOrientation);
             
             // Handle window resizing (debounced)
             let resizeTimer = null;
@@ -2274,6 +2421,31 @@ void main() {
                 if (!paused) {
                     resampleOrbitalInPlace();
                 }
+                // Handle camera tween (OrbitControls camera) BEFORE render
+                if (isTransitioning && camTween) {
+                    const now = performance.now();
+                    const t = Math.min(1, (now - camTween.t0) / camTween.dur);
+                    const s = easeInOutCubic(t);
+                    const pos = camTween.fromPos.clone().lerp(camTween.toPos, s);
+                    const tgt = camTween.fromTarget.clone().lerp(camTween.toTarget, s);
+                    const up = camTween.fromUp.clone().lerp(camTween.toUp, s).normalize();
+                    camera.up.copy(up);
+                    camera.position.copy(pos);
+                    controls.target.copy(tgt);
+                    camera.lookAt(controls.target);
+                    if (t >= 1) { isTransitioning = false; camTween = null; controls.enabled = true; }
+                }
+                // Handle WebGPU camera tween BEFORE render
+                if (webgpuTween && webgpu && webgpu.camera) {
+                    const now = performance.now();
+                    const t = Math.min(1, (now - webgpuTween.t0) / webgpuTween.dur);
+                    const s = easeInOutCubic(t);
+                    webgpu.camera.yaw = webgpuTween.fromYaw + (webgpuTween.toYaw - webgpuTween.fromYaw) * s;
+                    webgpu.camera.pitch = webgpuTween.fromPitch + (webgpuTween.toPitch - webgpuTween.fromPitch) * s;
+                    webgpu.camera.distance = webgpuTween.fromDist + (webgpuTween.toDist - webgpuTween.fromDist) * s;
+                    if (t >= 1) { webgpuTween = null; }
+                }
+
                 if (renderMode !== 'webgpu') {
                     controls.update();
                     // Update billboard materials
@@ -2287,6 +2459,9 @@ void main() {
                 } else {
                     renderWebGPUFrame();
                 }
+                // Render orientation overlay (copy camera orientation)
+                axesRoot.quaternion.copy(camera.quaternion);
+                orientRenderer.render(orientScene, orientCam);
                 const currentTime = performance.now();
                 frames++;
                 if (currentTime - prevTime >= 1000) {
@@ -2301,6 +2476,7 @@ void main() {
             // Ensure WebGPU canvas hidden if created later and mode not webgpu
             if (webgpu.canvas && renderMode !== 'webgpu') {
                 webgpu.canvas.style.display = 'none';
+                webgpu.canvas.style.pointerEvents = 'none';
             }
             animate();
         };
