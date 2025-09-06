@@ -31,7 +31,7 @@ export async function initWebGPU(webgpu, container) {
   if (webgpu.initialized) return true;
   webgpu.canvas = document.createElement('canvas');
   webgpu.canvas.id = 'webgpu-canvas';
-  Object.assign(webgpu.canvas.style, { position:'absolute', top:'0', left:'0', width:'100%', height:'100%', zIndex:'5' });
+  Object.assign(webgpu.canvas.style, { position:'absolute', top:'0', left:'0', width:'100%', height:'100%', zIndex:'5', pointerEvents:'none' });
   container.appendChild(webgpu.canvas);
   try {
     const adapter = await navigator.gpu.requestAdapter(); if (!adapter) return false;
@@ -50,7 +50,7 @@ struct VSOut { @builtin(position) position: vec4<f32>, @location(0) color: vec3<
 @vertex fn vs(@builtin(instance_index) inst:u32, @builtin(vertex_index) vid:u32) -> VSOut {
   var out: VSOut; let p = particles[inst].pos; let quad = array<vec2<f32>,4>(vec2<f32>(-1.0,-1.0), vec2<f32>(1.0,-1.0), vec2<f32>(-1.0,1.0), vec2<f32>(1.0,1.0));
   let wpos = uniforms.view * vec4<f32>(p.xyz,1.0); var clip = uniforms.projection * wpos; let offs = quad[vid] * uniforms.pointSize.x * (10.0 / max(0.1, -wpos.z));
-  let xy = clip.xy + offs; clip = vec4<f32>(xy, clip.zw); out.position = clip; let cpos = vec3<f32>(0.18,0.39,0.88); let cneg = vec3<f32>(1.0,0.4,0.4);
+  let xy = clip.xy + offs; clip = vec4<f32>(xy, clip.zw)webgpu.uniforms.pointSize = 0.120;; out.position = clip; let cpos = vec3<f32>(0.18,0.39,0.88); let cneg = vec3<f32>(1.0,0.4,0.4);
   out.color = select(cneg, cpos, p.w >= 0.0); out.alpha = 0.65; return out; }
 @fragment fn fs(@location(0) color: vec3<f32>, @location(1) alpha: f32) -> @location(0) vec4<f32> { return vec4<f32>(color, alpha); }
 `;
@@ -140,4 +140,3 @@ export function renderWebGPUFrame(webgpu, camera, adaptiveFrame) {
   pass.setPipeline(webgpu.pipeline); pass.setBindGroup(0, webgpu.bindGroup); pass.draw(4, webgpu.numPoints, 0, 0); pass.end();
   device.queue.submit([encoder.finish()]);
 }
-

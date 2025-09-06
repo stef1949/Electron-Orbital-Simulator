@@ -48,10 +48,32 @@ float hash21(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.y
 vec3 sph(float r, float t, float p) { return vec3(r * sin(t) * cos(p), r * sin(t) * sin(p), r * cos(t)); }
 float getR(float r) { float t = clamp(r / uMaxRadius, 0.0, 1.0); return texture(uRadialLUT, vec2(t, 0.0)).r; }
 float sampleR(float u) { float rN = texture(uInvRadialCDF, vec2(u, 0.0)).r; return rN * uMaxRadius; }
+float factorialf(int n){ float f=1.0; for(int i=2;i<=8;i++){ if(i>n) break; f*=float(i);} return f; }
+float assocLegendreP(int l,int m,float x){
+  float pmm=1.0;
+  if (m>0){ float somx2 = sqrt(max(0.0, 1.0 - x*x)); float odd=1.0; for(int i=1;i<=8;i++){ if(i>m) break; odd*=float(2*i-1);} pmm = ((m%2)==0?1.0:-1.0) * odd * pow(somx2, float(m)); }
+  if (l==m) return pmm;
+  float pmmp1 = x * (2.0*float(m)+1.0) * pmm;
+  if (l==m+1) return pmmp1;
+  float pmmPrev = pmm; float pmml = pmmp1; float pll = 0.0;
+  for (int ll=2; ll<=8; ll++){
+    if (ll <= m+1) continue; if (ll > l) break;
+    pll = ((2.0*float(ll)-1.0)*x*pmml - (float(ll)+float(m)-1.0)*pmmPrev) / (float(ll)-float(m));
+    pmmPrev = pmml; pmml = pll;
+  }
+  return pmml;
+}
 float getAngular(float th, float ph, float l, float m) {
-  if (l == 0.0) return 1.0;
-  if (l == 1.0) { if (m == 0.0) return cos(th); if (m == 1.0) return sin(th)*cos(ph); return sin(th)*sin(ph); }
-  if (l == 2.0) { float ct=cos(th), st=sin(th); if (m==0.0) return 1.5*ct*ct-0.5; if (m==1.0) return -1.732*st*ct*cos(ph); if (m==-1.0) return 1.732*st*ct*sin(ph); if (m==2.0) return 0.866*st*st*cos(2.0*ph); return 0.866*st*st*sin(2.0*ph);} return 0.0; }
+  const float PI = 3.141592653589793;
+  int li = int(l + 0.5);
+  int mi = int(abs(m) + 0.5);
+  float x = cos(th);
+  float Plm = assocLegendreP(li, mi, x);
+  float norm = sqrt(((2.0*float(li)+1.0)/(4.0*PI)) * (factorialf(li-mi) / max(1.0, factorialf(li+mi))));
+  if (mi==0) return norm * Plm;
+  float base = sqrt(2.0) * norm * Plm;
+  return (m>0.0) ? base * cos(float(mi)*ph) : base * sin(float(mi)*ph);
+}
 void main(){
   float ix = floor(gl_FragCoord.x), iy = floor(gl_FragCoord.y); float idx = ix + iy * uResolution.x; if (idx >= uNumPoints) discard;
   const vec2 R2 = vec2(0.754877666, 0.569840296); vec2 jitter = R2 * (uFrame + uSeed * 101.0); vec2 base = (vec2(ix,iy)+0.5+jitter)/uResolution;
@@ -117,16 +139,19 @@ export function createGPUPointsMesh(sampleTarget, THREERef, occlusionEnabled) {
       uFov: { value: 75 },
       uColorPos: { value: new T3.Vector3(((colors.positive>>16)&255)/255, ((colors.positive>>8)&255)/255, (colors.positive&255)/255) },
       uColorNeg: { value: new T3.Vector3(((colors.negative>>16)&255)/255, ((colors.negative>>8)&255)/255, (colors.negative&255)/255) },
+      uAlphaBase: { value: 0.7 },
+      uAlphaScale: { value: 1.0 },
+      uSizeScale: { value: 1.0 },
     },
     vertexShader: `
       attribute float aIndex; uniform sampler2D uSamples; uniform vec2 uTexSize; uniform float uPointSize;
-      uniform float uPixelRatio; uniform float uViewportHeight; uniform float uFov; uniform vec3 uColorPos; uniform vec3 uColorNeg;
+      uniform float uPixelRatio; uniform float uViewportHeight; uniform float uFov; uniform vec3 uColorPos; uniform vec3 uColorNeg; uniform float uSizeScale;
       varying vec3 vColor; varying float vPsi;
       void main(){ float id=aIndex; float w=uTexSize.x; float ix=mod(id,w); float iy=floor(id/w);
         vec2 uv=vec2((ix+0.5)/w,(iy+0.5)/uTexSize.y); vec4 s=texture2D(uSamples, uv); vec3 pos=s.xyz; float psi=s.w; vPsi=psi; vColor = (psi>=0.0)?uColorPos:uColorNeg;
-        vec4 mv = modelViewMatrix*vec4(pos,1.0); float scale = uPixelRatio*(0.5*uViewportHeight)/tan(0.5*radians(uFov)); gl_PointSize = uPointSize*(scale/-mv.z); gl_Position = projectionMatrix*mv; }
+        vec4 mv = modelViewMatrix*vec4(pos,1.0); float scale = uPixelRatio*(0.5*uViewportHeight)/tan(0.5*radians(uFov)); float sizeAmp = mix(0.6, 1.3, clamp(abs(psi)*uSizeScale, 0.0, 1.0)); gl_PointSize = uPointSize*(scale/-mv.z)*sizeAmp; gl_Position = projectionMatrix*mv; }
     `,
-    fragmentShader: `precision highp float; varying vec3 vColor; varying float vPsi; void main(){ gl_FragColor=vec4(vColor, 0.7); }`,
+    fragmentShader: `precision highp float; varying vec3 vColor; varying float vPsi; uniform float uAlphaBase; uniform float uAlphaScale; void main(){ float alpha = uAlphaBase * clamp(abs(vPsi) * uAlphaScale, 0.0, 1.0); gl_FragColor=vec4(vColor, alpha); }`,
     transparent: true,
     depthWrite: !occlusionEnabled,
     depthTest: occlusionEnabled,
@@ -134,4 +159,3 @@ export function createGPUPointsMesh(sampleTarget, THREERef, occlusionEnabled) {
   });
   return new T3.Points(geom, mat);
 }
-

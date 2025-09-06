@@ -1,36 +1,42 @@
 import { maxRadius } from '../config.js';
 
 // Real-valued, simplified hydrogen-like wavefunction components
-export function getWaveFunctionValue(n, l, m, r, theta, phi) {
-  let radial_part = 0;
-  let angular_part = 0;
-
-  if (n <= l) return 0;
-  const x = (2 * r) / n;
-  const p = n - l - 1;
-  const alpha = 2 * l + 1;
-  let L = 1;
-  if (p === 1) L = -x + (alpha + 1);
-  else if (p === 2) L = 0.5 * (x * x - 2 * (alpha + 2) * x + (alpha + 1) * (alpha + 2));
-  else if (p === 3) L = (1 / 6) * (-x * x * x + 3 * (alpha + 3) * x * x - 3 * (alpha + 2) * (alpha + 3) * x + (alpha + 1) * (alpha + 2) * (alpha + 3));
-  radial_part = Math.pow(x, l) * L * Math.exp(-x / 2);
-
-  if (l === 0) angular_part = 1;
-  else if (l === 1) {
-    if (m === 0) angular_part = Math.cos(theta);
-    else if (m === 1) angular_part = Math.sin(theta) * Math.cos(phi);
-    else angular_part = Math.sin(theta) * Math.sin(phi);
-  } else if (l === 2) {
-    const ct = Math.cos(theta), st = Math.sin(theta);
-    if (m === 0) angular_part = 1.5 * ct * ct - 0.5;
-    else if (m === 1) angular_part = -1.732 * st * ct * Math.cos(phi);
-    else if (m === -1) angular_part = 1.732 * st * ct * Math.sin(phi);
-    else if (m === 2) angular_part = 0.866 * st * st * Math.cos(2 * phi);
-    else angular_part = 0.866 * st * st * Math.sin(2 * phi);
+function fact(n){ let f=1; for(let i=2;i<=n;i++) f*=i; return f; }
+function assocLegendre(l, m, x){
+  if (m < 0 || l < 0 || m > l) return 0;
+  let pmm = 1;
+  if (m > 0){
+    const somx2 = Math.sqrt(Math.max(0, 1 - x*x));
+    let odd = 1; for (let i=1;i<=m;i++) odd *= (2*i-1);
+    pmm = ((m%2)? -1: 1) * odd * Math.pow(somx2, m);
   }
-
-  return radial_part * angular_part;
+  if (l === m) return pmm;
+  let pmmp1 = x * (2*m + 1) * pmm;
+  if (l === m+1) return pmmp1;
+  let pmmPrev = pmm, pmml = pmmp1, pll = 0;
+  for (let L = m + 2; L <= l; L++){
+    pll = ((2*L - 1)*x*pmml - (L + m - 1)*pmmPrev) / (L - m);
+    pmmPrev = pmml; pmml = pll;
+  }
+  return pmml;
 }
+function radialR(n,l,r){
+  if (n <= l) return 0;
+  const rho = 2*r/n;
+  const p = n - l - 1;
+  const alpha = 2*l + 1;
+  const N = (2/(n*n)) * Math.sqrt(fact(n-l-1)/fact(n+l));
+  return N * Math.exp(-rho/2) * Math.pow(rho, l) * assocLaguerre(p, alpha, rho);
+}
+function realY(l,m,theta,phi){
+  const PI = Math.PI; const x = Math.cos(theta); const am = Math.abs(m);
+  const Plm = assocLegendre(l, am, x);
+  const norm = Math.sqrt((2*l+1)/(4*PI) * fact(l-am)/Math.max(1,fact(l+am)));
+  if (m === 0) return norm * Plm;
+  const base = Math.SQRT2 * norm * Plm;
+  return (m > 0) ? base * Math.cos(am * phi) : base * Math.sin(am * phi);
+}
+export function getWaveFunctionValue(n, l, m, r, theta, phi) { return radialR(n,l,r) * realY(l,m,theta,phi); }
 
 export function estimateMaxPsi2(n, l, m, samples = 1000) {
   let maxPsi2 = 0;
@@ -46,31 +52,14 @@ export function estimateMaxPsi2(n, l, m, samples = 1000) {
 }
 
 export function estimateMaxAngular2(l, m, samples = 2000) {
-  function angularVal(theta, phi) {
-    if (l === 0) return 1.0;
-    else if (l === 1) {
-      if (m === 0) return Math.cos(theta);
-      else if (m === 1) return Math.sin(theta) * Math.cos(phi);
-      else return Math.sin(theta) * Math.sin(phi);
-    } else if (l === 2) {
-      const ct = Math.cos(theta), st = Math.sin(theta);
-      if (m === 0) return 1.5 * ct * ct - 0.5;
-      else if (m === 1) return -1.732 * st * ct * Math.cos(phi);
-      else if (m === -1) return 1.732 * st * ct * Math.sin(phi);
-      else if (m === 2) return 0.866 * st * st * Math.cos(2.0 * phi);
-      else return 0.866 * st * st * Math.sin(2.0 * phi);
-    }
-    return 0.0;
-  }
   let maxA2 = 0;
   for (let i = 0; i < samples; i++) {
     const u = Math.random();
     const v = Math.random();
     const theta = Math.acos(1 - 2 * u);
     const phi = 2 * Math.PI * v;
-    const a = angularVal(theta, phi);
+    const a = realY(l, m, theta, phi);
     maxA2 = Math.max(maxA2, a * a);
   }
   return Math.max(maxA2, 1e-6);
 }
-

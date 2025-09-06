@@ -1,6 +1,13 @@
 const T = window.THREE;
 import { maxRadius } from '../config.js';
 
+function fact(n){ let f=1; for(let i=2;i<=n;i++) f*=i; return f; }
+function assocLaguerre(p, alpha, x){ if (p===0) return 1; if (p===1) return -x+alpha+1; let Lkm2=1, Lkm1=-x+alpha+1; for(let k=2;k<=p;k++){ const a=(2*(k-1)+alpha+1-x)*Lkm1; const b=((k-1)+alpha)*Lkm2; const Lk=(a-b)/k; Lkm2=Lkm1; Lkm1=Lk; } return Lkm1; }
+function radialR(n,l,r){ if (n<=l) return 0; const rho=2*r/n; const p=n-l-1; const alpha=2*l+1; const N=(2/(n*n))*Math.sqrt(fact(n-l-1)/fact(n+l)); return N*Math.exp(-rho/2)*Math.pow(rho,l)*assocLaguerre(p,alpha,rho); }
+function fact(n){ let f=1; for(let i=2;i<=n;i++) f*=i; return f; }
+function assocLegendre(l, m, x){ if(m<0||l<0||m>l) return 0; let pmm=1; if(m>0){ const somx2=Math.sqrt(Math.max(0,1-x*x)); let odd=1; for(let i=1;i<=m;i++) odd*=(2*i-1); pmm=((m%2)?-1:1)*odd*Math.pow(somx2,m);} if(l===m) return pmm; let pmmp1=x*(2*m+1)*pmm; if(l===m+1) return pmmp1; let pmmPrev=pmm, pmml=pmmp1, pll=0; for(let L=m+2; L<=l; L++){ pll=((2*L-1)*x*pmml-(L+m-1)*pmmPrev)/(L-m); pmmPrev=pmml; pmml=pll; } return pmml; }
+function realY(l,m,theta,phi){ const PI=Math.PI; const x=Math.cos(theta); const am=Math.abs(m); const Plm=assocLegendre(l, am, x); const norm=Math.sqrt((2*l+1)/(4*PI) * fact(l-am)/Math.max(1,fact(l+am))); if(m===0) return norm*Plm; const base=Math.SQRT2*norm*Plm; return (m>0) ? base*Math.cos(am*phi) : base*Math.sin(am*phi); }
+
 // Caches
 export const radialCache = {}; // key: `${n}_${l}` -> { radial: DataTexture, invCdf: DataTexture }
 export const angularCache = {}; // key: `${l}_${m}` -> { invThetaTex, invPhiTex, thetaSize, phiSize, invThetaData, invPhiData }
@@ -10,17 +17,7 @@ export function createRadialLUT(n, l, size = 1024) {
   for (let i = 0; i < size; i++) {
     const t = i / (size - 1);
     const r = t * maxRadius;
-    let radial_part = 0;
-    if (n > l) {
-      const x = (2 * r) / n;
-      const p = n - l - 1;
-      const alpha = 2 * l + 1;
-      let L = 1;
-      if (p === 1) L = -x + (alpha + 1);
-      else if (p === 2) L = 0.5 * (x * x - 2 * (alpha + 2) * x + (alpha + 1) * (alpha + 2));
-      else if (p === 3) L = (1 / 6) * (-x * x * x + 3 * (alpha + 3) * x * x - 3 * (alpha + 2) * (alpha + 3) * x + (alpha + 1) * (alpha + 2) * (alpha + 3));
-      radial_part = Math.pow(x, l) * L * Math.exp(-x / 2);
-    }
+    const radial_part = radialR(n,l,r);
     arr[i * 4 + 0] = radial_part;
     arr[i * 4 + 1] = 0;
     arr[i * 4 + 2] = 0;
@@ -40,18 +37,8 @@ export function createRadialInvCDF(n, l, size = 1024) {
   for (let i = 0; i < size; i++) {
     const t = i / (size - 1);
     const r = t * maxRadius;
-    let radial_part = 0;
-    if (n > l) {
-      const x = (2 * r) / n;
-      const p = n - l - 1;
-      const alpha = 2 * l + 1;
-      let L = 1;
-      if (p === 1) L = -x + (alpha + 1);
-      else if (p === 2) L = 0.5 * (x * x - 2 * (alpha + 2) * x + (alpha + 1) * (alpha + 2));
-      else if (p === 3) L = (1 / 6) * (-x * x * x + 3 * (alpha + 3) * x * x - 3 * (alpha + 2) * (alpha + 3) * x + (alpha + 1) * (alpha + 2) * (alpha + 3));
-      radial_part = Math.pow(x, l) * L * Math.exp(-x / 2);
-    }
-    radial[i] = radial_part * radial_part * (r * r);
+    const R = radialR(n,l,r);
+    radial[i] = R*R * (r * r);
   }
   const cdf = new Float32Array(size);
   let sum = 0;
@@ -83,22 +70,6 @@ export function createRadialInvCDF(n, l, size = 1024) {
 }
 
 export function createAngularInvTables(l, m, thetaSize = 256, phiSize = 256) {
-  function angularVal(theta, phi) {
-    if (l === 0) return 1.0;
-    else if (l === 1) {
-      if (m === 0) return Math.cos(theta);
-      else if (m === 1) return Math.sin(theta) * Math.cos(phi);
-      else return Math.sin(theta) * Math.sin(phi);
-    } else if (l === 2) {
-      const ct = Math.cos(theta), st = Math.sin(theta);
-      if (m === 0) return 1.5 * ct * ct - 0.5;
-      else if (m === 1) return -1.732 * st * ct * Math.cos(phi);
-      else if (m === -1) return 1.732 * st * ct * Math.sin(phi);
-      else if (m === 2) return 0.866 * st * st * Math.cos(2 * phi);
-      else return 0.866 * st * st * Math.sin(2 * phi);
-    }
-    return 0.0;
-  }
   const thetaPDF = new Float32Array(thetaSize);
   const rowPhiCDFs = new Array(thetaSize);
   const dTheta = Math.PI / (thetaSize - 1);
@@ -110,7 +81,7 @@ export function createAngularInvTables(l, m, thetaSize = 256, phiSize = 256) {
     let rowSum = 0;
     for (let j = 0; j < phiSize; j++) {
       const phi = j * dPhi;
-      const a = angularVal(theta, phi);
+      const a = realY(l, m, theta, phi);
       const w = a * a * st;
       rowPDF[j] = w; rowSum += w;
     }
@@ -179,4 +150,3 @@ export function getAngular(l, m, thetaSize = 256, phiSize = 256) {
   if (!angularCache[key]) angularCache[key] = createAngularInvTables(l, m, thetaSize, phiSize);
   return angularCache[key];
 }
-

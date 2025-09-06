@@ -228,7 +228,7 @@
             const ADAPTIVE_BASE_ATTEMPTS_FACTOR = 6; // attempts per instance baseline
             const SUBSET_RESAMPLE_FRACTION = 0.05; // fraction of instances updated per adaptive frame
             const EMA_ALPHA = 0.25; // smoothing factor for maxPsi2
-            let renderMode = 'gpu'; // 'instanced', 'points', 'gpu' (WebGL sampling), 'webgpu'
+            let renderMode = 'webgpu'; // 'instanced', 'points', 'gpu' (WebGL sampling), 'webgpu'
             // renderMode can also be 'gpu' for GPU-based sampling + point-cloud shader
             let occlusionEnabled = false; // toggles depth-based occlusion culling
             let impostorEnabled = false; // toggles impostor rendering for instanced mode (billboard quads instead of spheres)
@@ -346,7 +346,7 @@ struct VSOut {
   let wpos = uniforms.view * vec4<f32>(p.xyz, 1.0);
   var clip = uniforms.projection * wpos;
   let size = uniforms.pointSize.x;
-  let offs = quad[vid] * size * (10.0 / max(0.1, -wpos.z));
+  let offs = quad[vid] * size * (20.0 / max(0.1, -wpos.z));
   let xy = clip.xy + offs;
   clip = vec4<f32>(xy, clip.zw);
   out.position = clip;
@@ -386,6 +386,7 @@ struct Params {
   maxRadius: f32,
   l: f32,
   m: f32,
+  n: f32,
 };
 
 @group(0) @binding(0) var<storage, read> invR: array<f32>;
@@ -439,23 +440,37 @@ fn samplePhi(row: u32, u: f32) -> f32 {
   return mix(a, b, t);
 }
 
+fn fact(n:i32)->f32{ var f:f32=1.0; for(var i:i32=2;i<=8;i=i+1){ if(i>n){break;} f=f*f32(i);} return f; }
+fn assocP(l:i32, m:i32, x:f32)->f32{
+  var pmm:f32 = 1.0;
+  if (m>0) {
+    let somx2 = sqrt(max(0.0, 1.0 - x*x));
+    var odd:f32 = 1.0;
+    for (var i:i32=1; i<=8; i=i+1) { if (i>m) { break; } odd = odd * f32(2*i - 1); }
+    let sign = select(-1.0, 1.0, (m & 1) == 0);
+    pmm = sign * odd * pow(somx2, f32(m));
+  }
+  if (l==m) { return pmm; }
+  var pmmp1:f32 = x * f32(2*m + 1) * pmm;
+  if (l==m+1) { return pmmp1; }
+  var pmmPrev:f32 = pmm; var pmml:f32 = pmmp1; var pll:f32 = 0.0;
+  for (var L:i32=m+2; L<=8; L=L+1) {
+    if (L>l) { break; }
+    pll = ((f32(2*L-1))*x*pmml - f32(L+m-1)*pmmPrev) / f32(L-m);
+    pmmPrev = pmml; pmml = pll;
+  }
+  return pmml;
+}
 fn getAngular(theta: f32, phi: f32, l: f32, m: f32) -> f32 {
-  if (l == 0.0) { return 1.0; }
-  if (l == 1.0) {
-    if (m == 0.0) { return cos(theta); }
-    if (m == 1.0) { return sin(theta) * cos(phi); }
-    return sin(theta) * sin(phi);
-  }
-  if (l == 2.0) {
-    let ct = cos(theta);
-    let st = sin(theta);
-    if (m == 0.0) { return 1.5 * ct * ct - 0.5; }
-    if (m == 1.0) { return -1.732 * st * ct * cos(phi); }
-    if (m == -1.0) { return 1.732 * st * ct * sin(phi); }
-    if (m == 2.0) { return 0.866 * st * st * cos(2.0 * phi); }
-    return 0.866 * st * st * sin(2.0 * phi);
-  }
-  return 0.0;
+  let PI:f32 = 3.141592653589793;
+  let li:i32 = i32(l + 0.5);
+  let mi:i32 = i32(abs(m) + 0.5);
+  let x = cos(theta);
+  let Plm = assocP(li, mi, x);
+  let norm = sqrt(((2.0*f32(li)+1.0)/(4.0*PI)) * (fact(li-mi) / max(1.0, fact(li+mi))));
+  if (mi==0) { return norm * Plm; }
+  let base = sqrt(2.0) * norm * Plm;
+  return select(base * sin(f32(mi)*phi), base * cos(f32(mi)*phi), m > 0.0);
 }
 
 @compute @workgroup_size(256)
@@ -488,7 +503,25 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
   let x = r * st * cos(phi);
   let y = r * st * sin(phi);
   let z = r * ct;
-  let psi = getAngular(theta, phi, params.l, params.m);
+  // Include radial phase (sign) via associated Laguerre, to match real hydrogenic wavefunction phase
+  let rho = 2.0 * r / params.n;
+  let alpha = 2.0 * params.l + 1.0;
+  // Recurrence for L_p^alpha(rho)
+  let pInt: u32 = u32(max(0.0, params.n - params.l - 1.0));
+  var Lkm2: f32 = 1.0;
+  var Lkm1: f32 = -rho + alpha + 1.0;
+  if (pInt == 0u) { Lkm1 = 1.0; }
+  else if (pInt == 1u) { /* Lkm1 already set */ }
+  else {
+    for (var k:u32=2u; k<=pInt; k=k+1u) {
+      let a = (2.0* f32(k-1u) + alpha + 1.0 - rho) * Lkm1;
+      let b = (f32(k-1u) + alpha) * Lkm2;
+      let Lk = (a - b) / f32(k);
+      Lkm2 = Lkm1; Lkm1 = Lk;
+    }
+  }
+  let signR = select(-1.0, 1.0, Lkm1 >= 0.0);
+  let psi = signR * getAngular(theta, phi, params.l, params.m);
   particles[id].pos = vec4<f32>(x, y, z, psi);
   rngStates[id] = state;
 }`;
@@ -513,9 +546,11 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // Ensure LUTs/tables exist
                 const rk = `${n}_${l}`;
                 if (!radialCache[rk]) {
+                    const radTex = createRadialLUT(n, l, 1024);
                     radialCache[rk] = {
-                        radial: createRadialLUT(n, l, 1024),
-                        invCdf: createRadialInvCDF(n, l, 1024)
+                        radial: radTex,
+                        invCdf: createRadialInvCDF(n, l, 1024),
+                        maxR: radTex._maxRabs || 1
                     };
                 }
                 const ak = `${l}_${m}`;
@@ -577,7 +612,8 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // Ensure sampling tables exist and are on GPU
                 const rk = `${n}_${l}`;
                 if (!radialCache[rk]) {
-                    radialCache[rk] = { radial: createRadialLUT(n, l, 1024), invCdf: createRadialInvCDF(n, l, 1024) };
+                    const radTex = createRadialLUT(n, l, 1024);
+                    radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n, l, 1024), maxR: radTex._maxRabs || 1 };
                 }
                 const ak = `${l}_${m}`;
                 if (!angularCache[ak]) {
@@ -683,6 +719,7 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
                 paramsBuf.setFloat32(28, maxRadius, true);
                 paramsBuf.setFloat32(32, currentOrbitalData.l, true);
                 paramsBuf.setFloat32(36, currentOrbitalData.m, true);
+                paramsBuf.setFloat32(40, currentOrbitalData.n, true);
                 device.queue.writeBuffer(webgpu.computeUniformBuffer, 0, webgpu._computeStaging);
 
                 const encoder = device.createCommandEncoder();
@@ -729,67 +766,57 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
                 return maxPsi2 > 0 ? maxPsi2 : 1e-6;
             }
 
-            // Calculates the wave function value (which can be positive or negative)
-            // Note: This is a simplified, real-valued version for visualization.
-            function getWaveFunctionValue(n, l, m, r, theta, phi) {
-                let radial_part = 0;
-                let angular_part = 0;
-
-                // Radial part R(r) - hydrogenic-like using associated Laguerre polynomials (unnormalized)
-                // Uses x = 2r/n and L^{alpha}_p where p = n-l-1, alpha = 2l+1
-                if (n <= l) {
-                    radial_part = 0;
-                } else {
-                    const x = 2 * r / n;
-                    const p = n - l - 1;
-                    const alpha = 2 * l + 1;
-                    let L = 1;
-                    // Associated Laguerre polynomials for p = 0..3 (covers n <= 4)
-                    if (p === 0) {
-                        L = 1;
-                    } else if (p === 1) {
-                        // L^{alpha}_1(x) = -x + alpha + 1
-                        L = -x + (alpha + 1);
-                    } else if (p === 2) {
-                        // L^{alpha}_2(x) = 1/2 (x^2 - 2(alpha+2)x + (alpha+1)(alpha+2))
-                        L = 0.5 * (x * x - 2 * (alpha + 2) * x + (alpha + 1) * (alpha + 2));
-                    } else if (p === 3) {
-                        // L^{alpha}_3(x) = 1/6 (-x^3 + 3(alpha+3)x^2 - 3(alpha+2)(alpha+3)x + (alpha + 1)(alpha + 2)(alpha + 3))
-                        L = (1 / 6) * (-x * x * x + 3 * (alpha + 3) * x * x - 3 * (alpha + 2) * (alpha + 3) * x + (alpha + 1) * (alpha + 2) * (alpha + 3));
-                    } else {
-                        // For larger p fallback to a simple exponential times polynomial approximation
-                        L = 1;
-                    }
-                    radial_part = Math.pow(x, l) * L * Math.exp(-x / 2);
+            // Accurate hydrogenic components
+            function fact(n){ let f=1; for(let i=2;i<=n;i++) f*=i; return f; }
+            function assocLaguerre(p, alpha, x){
+                if (p === 0) return 1;
+                if (p === 1) return -x + alpha + 1;
+                let Lkm2 = 1, Lkm1 = -x + alpha + 1;
+                for (let k=2;k<=p;k++){
+                    const a = (2*(k-1) + alpha + 1 - x) * Lkm1;
+                    const b = ((k-1) + alpha) * Lkm2;
+                    const Lk = (a - b) / k;
+                    Lkm2=Lkm1; Lkm1=Lk;
                 }
-
-                // Angular part Y(theta, phi) - Real-valued Spherical Harmonics
-                if (l === 0) { // s-orbital
-                    angular_part = 1;
-                } else if (l === 1) { // p-orbitals
-                    if (m === 0) { // p_z
-                        angular_part = Math.cos(theta);
-                    } else if (m === 1) { // p_x
-                        angular_part = Math.sin(theta) * Math.cos(phi);
-                    } else if (m === -1) { // p_y
-                        angular_part = Math.sin(theta) * Math.sin(phi);
-                    }
-                } else if (l === 2) { // d-orbitals
-                    if (m === 0) { // d_z2
-                        angular_part = (3 * Math.cos(theta) * Math.cos(theta) - 1);
-                    } else if (m === 1) { // d_xz
-                        angular_part = Math.sin(theta) * Math.cos(theta) * Math.cos(phi);
-                    } else if (m === -1) { // d_yz
-                        angular_part = Math.sin(theta) * Math.cos(theta) * Math.sin(phi);
-                    } else if (m === 2) { // d_x2-y2
-                        angular_part = Math.sin(theta) * Math.sin(theta) * Math.cos(2 * phi);
-                    } else if (m === -2) { // d_xy
-                        angular_part = Math.sin(theta) * Math.sin(theta) * Math.sin(2 * phi);
-                    }
-                }
-                
-                return radial_part * angular_part;
+                return Lkm1;
             }
+            function radialR(n,l,r){
+                if (n <= l) return 0;
+                const rho = 2*r/n;
+                const p = n - l - 1;
+                const alpha = 2*l + 1;
+                const N = (2/(n*n)) * Math.sqrt(fact(n-l-1)/fact(n+l));
+                return N * Math.exp(-rho/2) * Math.pow(rho, l) * assocLaguerre(p, alpha, rho);
+            }
+            function realY(l,m,theta,phi){
+                // Normalized real spherical harmonics via associated Legendre
+                const PI = Math.PI; const x = Math.cos(theta); const am = Math.abs(m);
+                function fact(n){ let f=1; for(let i=2;i<=n;i++) f*=i; return f; }
+                function assocLegendre(ll, mm, xx){
+                    if (mm < 0 || ll < 0 || mm > ll) return 0;
+                    let pmm = 1;
+                    if (mm > 0){
+                        const somx2 = Math.sqrt(Math.max(0, 1 - xx*xx));
+                        let odd = 1; for (let i=1;i<=mm;i++) odd *= (2*i-1);
+                        pmm = ((mm%2)? -1: 1) * odd * Math.pow(somx2, mm);
+                    }
+                    if (ll === mm) return pmm;
+                    let pmmp1 = xx * (2*mm + 1) * pmm;
+                    if (ll === mm + 1) return pmmp1;
+                    let pmmPrev = pmm, pmml = pmmp1, pll = 0;
+                    for (let L = mm + 2; L <= ll; L++){
+                        pll = ((2*L - 1)*xx*pmml - (L + mm - 1)*pmmPrev) / (L - mm);
+                        pmmPrev = pmml; pmml = pll;
+                    }
+                    return pmml;
+                }
+                const Plm = assocLegendre(l, am, x);
+                const norm = Math.sqrt((2*l+1)/(4*PI) * fact(l-am)/Math.max(1,fact(l+am)));
+                if (m === 0) return norm * Plm;
+                const base = Math.SQRT2 * norm * Plm;
+                return (m > 0) ? base * Math.cos(am * phi) : base * Math.sin(am * phi);
+            }
+            function getWaveFunctionValue(n, l, m, r, theta, phi) { return radialR(n,l,r) * realY(l,m,theta,phi); }
 
             // Precompute radial LUT (1D) for R_nl(r) to avoid expensive per-sample exp/polynomial
             function createRadialLUT(n, l, size = 1024) {
@@ -833,31 +860,15 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
                 return tex;
             }
 
-            // Estimate max angular^2 for given (l,m) using the same simplified forms
+            // Estimate max |Y_lm|^2 for scaling
             function estimateMaxAngular2(l, m, samples = 2000) {
-                function angularVal(theta, phi) {
-                    if (l === 0) return 1.0;
-                    else if (l === 1) {
-                        if (m === 0) return Math.cos(theta);
-                        else if (m === 1) return Math.sin(theta) * Math.cos(phi);
-                        else return Math.sin(theta) * Math.sin(phi);
-                    } else if (l === 2) {
-                        const ct = Math.cos(theta), st = Math.sin(theta);
-                        if (m === 0) return 1.5 * ct * ct - 0.5;
-                        else if (m === 1) return -1.732 * st * ct * Math.cos(phi);
-                        else if (m === -1) return 1.732 * st * ct * Math.sin(phi);
-                        else if (m === 2) return 0.866 * st * st * Math.cos(2.0 * phi);
-                        else return 0.866 * st * st * Math.sin(2.0 * phi);
-                    }
-                    return 0.0;
-                }
                 let maxA2 = 0.0;
                 for (let i = 0; i < samples; i++) {
                     const u = Math.random();
                     const v = Math.random();
                     const theta = Math.acos(1 - 2 * u);
                     const phi = 2 * Math.PI * v;
-                    const a = angularVal(theta, phi);
+                    const a = realY(l, m, theta, phi);
                     const a2 = a * a;
                     if (a2 > maxA2) maxA2 = a2;
                 }
@@ -866,34 +877,13 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
 
             // Build inverse CDF texture for r sampling: p in [0,1] -> r/maxRadius
             function createRadialInvCDF(n, l, size = 1024) {
-                // First compute radial part like in createRadialLUT
+                // Compute PDF over r: |R_{nl}(r)|^2 r^2
                 const radial = new Float32Array(size);
                 for (let i = 0; i < size; i++) {
                     const t = i / (size - 1);
                     const r = t * maxRadius;
-                    let radial_part = 0;
-                    if (n <= l) {
-                        radial_part = 0;
-                    } else {
-                        const x = 2 * r / n;
-                        const p = n - l - 1;
-                        const alpha = 2 * l + 1;
-                        let L = 1;
-                        if (p === 0) {
-                            L = 1;
-                        } else if (p === 1) {
-                            L = -x + (alpha + 1);
-                        } else if (p === 2) {
-                            L = 0.5 * (x * x - 2 * (alpha + 2) * x + (alpha + 1) * (alpha + 2));
-                        } else if (p === 3) {
-                            L = (1 / 6) * (-x * x * x + 3 * (alpha + 3) * x * x - 3 * (alpha + 2) * (alpha + 3) * x + (alpha + 1) * (alpha + 2) * (alpha + 3));
-                        } else {
-                            L = 1;
-                        }
-                        radial_part = Math.pow(x, l) * L * Math.exp(-x / 2);
-                    }
-                    // Probability density ~ |R|^2 * r^2
-                    radial[i] = radial_part * radial_part * (r * r);
+                    const R = radialR(n,l,r);
+                    radial[i] = R*R * (r * r);
                 }
                 // Build CDF
                 const cdf = new Float32Array(size);
@@ -938,22 +928,6 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
             // Build angular importance sampling tables for given (l,m)
             function createAngularInvTables(l, m, thetaSize = 256, phiSize = 256) {
                 // PDF grid over theta in [0,pi], phi in [0,2pi]
-                function angularVal(theta, phi) {
-                    if (l === 0) return 1.0;
-                    else if (l === 1) {
-                        if (m === 0) return Math.cos(theta);
-                        else if (m === 1) return Math.sin(theta) * Math.cos(phi);
-                        else return Math.sin(theta) * Math.sin(phi);
-                    } else if (l === 2) {
-                        const ct = Math.cos(theta), st = Math.sin(theta);
-                        if (m === 0) return 1.5 * ct * ct - 0.5;
-                        else if (m === 1) return -1.732 * st * ct * Math.cos(phi);
-                        else if (m === -1) return 1.732 * st * ct * Math.sin(phi);
-                        else if (m === 2) return 0.866 * st * st * Math.cos(2.0 * phi);
-                        else return 0.866 * st * st * Math.sin(2.0 * phi);
-                    }
-                    return 0.0;
-                }
 
                 const thetaPDF = new Float32Array(thetaSize);
                 const rowPhiCDFs = new Array(thetaSize);
@@ -967,7 +941,7 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
                     let rowSum = 0;
                     for (let j = 0; j < phiSize; j++) {
                         const phi = j * dPhi;
-                        const a = angularVal(theta, phi);
+                        const a = realY(l, m, theta, phi);
                         const w = a * a * st; // include measure sin(theta)
                         rowPDF[j] = w;
                         rowSum += w;
@@ -1160,21 +1134,31 @@ float sampleRadius(float u) {
     return rNorm * uMaxRadius;
 }
 
-float getAngular(float theta, float phi, float l, float m) {
-    if (l == 0.0) return 1.0;
-    else if (l == 1.0) {
-        if (m == 0.0) return cos(theta);
-        else if (m == 1.0) return sin(theta) * cos(phi);
-        else return sin(theta) * sin(phi);
-    } else if (l == 2.0) {
-        float ct = cos(theta), st = sin(theta);
-        if (m == 0.0) return 1.5 * ct * ct - 0.5;
-        else if (m == 1.0) return -1.732 * st * ct * cos(phi);
-        else if (m == -1.0) return 1.732 * st * ct * sin(phi);
-        else if (m == 2.0) return 0.866 * st * st * cos(2.0 * phi);
-        else return 0.866 * st * st * sin(2.0 * phi);
+float factorialf(int n){ float f=1.0; for(int i=2;i<=8;i++){ if(i>n) break; f*=float(i);} return f; }
+float assocLegendreP(int l,int m,float x){
+    float pmm=1.0;
+    if (m>0){ float somx2 = sqrt(max(0.0, 1.0 - x*x)); float odd=1.0; for(int i=1;i<=8;i++){ if(i>m) break; odd*=float(2*i-1);} pmm = ((m%2)==0?1.0:-1.0) * odd * pow(somx2, float(m)); }
+    if (l==m) return pmm;
+    float pmmp1 = x * (2.0*float(m)+1.0) * pmm;
+    if (l==m+1) return pmmp1;
+    float pmmPrev = pmm; float pmml = pmmp1; float pll = 0.0;
+    for (int ll=2; ll<=8; ll++){
+        if (ll <= m+1) continue; if (ll > l) break;
+        pll = ((2.0*float(ll)-1.0)*x*pmml - (float(ll)+float(m)-1.0)*pmmPrev) / (float(ll)-float(m));
+        pmmPrev = pmml; pmml = pll;
     }
-    return 0.0;
+    return pmml;
+}
+float getAngular(float t, float p, float l, float m) {
+    const float PI = 3.141592653589793;
+    int li = int(l + 0.5);
+    int mi = int(abs(m) + 0.5);
+    float x = cos(t);
+    float Plm = assocLegendreP(li, mi, x);
+    float norm = sqrt(((2.0*float(li)+1.0)/(4.0*PI)) * (factorialf(li-mi) / max(1.0, factorialf(li+mi))));
+    if (mi==0) return norm * Plm;
+    float base = sqrt(2.0) * norm * Plm;
+    return (m>0.0) ? base * cos(float(mi)*p) : base * sin(float(mi)*p);
 }
 
 void main() {
@@ -1200,7 +1184,7 @@ void main() {
     float u3 = rng(s + 0.59);
     float r = sampleRadius(u1);
     float thetaNorm = texture(uInvThetaCDF, vec2(u2, 0.5)).r; // [0,1]
-    float theta = thetaNorm * 3.14159265;
+    float theta = thetaNorm * 3.141592653589793;
     float thetaIndex = clamp(thetaNorm * (uThetaSize - 1.0), 0.0, uThetaSize - 1.0);
     float row0 = floor(thetaIndex);
     float row1 = min(uThetaSize - 1.0, row0 + 1.0);
@@ -1210,7 +1194,7 @@ void main() {
     float phi0 = texture(uInvPhiCDF, vec2(u3, v0)).r;
     float phi1 = texture(uInvPhiCDF, vec2(u3, v1)).r;
     float phiNorm = mix(phi0, phi1, frow);
-    float phi = phiNorm * 6.283185;
+    float phi = phiNorm * 6.283185307179586;
 
     float radial = getRadial(r, uN, uL);
     float angular = getAngular(theta, phi, uL, uM);
@@ -1230,9 +1214,11 @@ void main() {
                 // Ensure LUT and invCDF exist for current n,l (cache per n,l)
                 const lutKey = `${n}_${l}`;
                 if (!radialCache[lutKey]) {
+                    const radTex = createRadialLUT(n, l, 1024);
                     radialCache[lutKey] = {
-                        radial: createRadialLUT(n, l, 1024),
-                        invCdf: createRadialInvCDF(n, l, 1024)
+                        radial: radTex,
+                        invCdf: createRadialInvCDF(n, l, 1024),
+                        maxR: radTex._maxRabs || 1
                     };
                 }
                 gpuRadialLUT = radialCache[lutKey].radial;
@@ -1340,6 +1326,14 @@ void main() {
                 geom.setAttribute('aIndex', new THREE.BufferAttribute(indices, 1));
 
                 const width = sampleTarget._texWidth, height = sampleTarget._texHeight;
+                // Estimate amplitude scales
+                const n = currentOrbitalData.n, l = currentOrbitalData.l, m = currentOrbitalData.m;
+                const rk = `${n}_${l}`;
+                const radMax = (radialCache[rk] && radialCache[rk].maxR) ? radialCache[rk].maxR : 1;
+                const angMax = Math.sqrt(estimateMaxAngular2(l, m));
+                const ampMax = Math.max(1e-6, radMax * angMax);
+                const alphaScale = 0.9 / ampMax;
+                const sizeScale = alphaScale;
                 const mat = new THREE.ShaderMaterial({
                     uniforms: {
                         uSamples: { value: sampleTarget.texture },
@@ -1352,7 +1346,9 @@ void main() {
                         uViewportHeight: { value: renderer.getSize(new THREE.Vector2()).y },
                         uFov: { value: camera.fov },
                         uDitherStrength: { value: 0.12 },
-                        uAlphaBase: { value: 0.7 }
+                        uAlphaBase: { value: 0.7 },
+                        uAlphaScale: { value: alphaScale },
+                        uSizeScale: { value: sizeScale }
                     },
                     vertexShader: `
                         attribute float aIndex;
@@ -1365,9 +1361,11 @@ void main() {
                         uniform float uViewportHeight;
                         uniform float uFov;
                         uniform float uDitherStrength;
+                        uniform float uSizeScale;
                         varying float vPsi;
                         varying vec3 vColor;
                         varying float vDither;
+                        varying float vAmp;
 
                         float hash1(float n) {
                             return fract(sin(n) * 43758.5453123);
@@ -1383,6 +1381,7 @@ void main() {
                             vec3 pos = s.xyz;
                             float psi = s.w;
                             vPsi = psi;
+                            vAmp = abs(psi);
                             vColor = (psi >= 0.0) ? uColorPos : uColorNeg;
                             vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
                             // Match Three.js PointsMaterial size attenuation
@@ -1390,7 +1389,8 @@ void main() {
                             float scale = uPixelRatio * (0.5 * uViewportHeight) / tan(0.5 * fov);
                             float jitter = 1.0 + uDitherStrength * (hash1(id * 17.0 + 0.123) * 2.0 - 1.0);
                             vDither = jitter;
-                            gl_PointSize = uPointSize * (scale / -mvPosition.z) * jitter;
+                            float sizeAmp = mix(0.6, 1.3, clamp(vAmp * uSizeScale, 0.0, 1.0));
+                            gl_PointSize = uPointSize * (scale / -mvPosition.z) * jitter * sizeAmp;
                             gl_Position = projectionMatrix * mvPosition;
                         }
                     `,
@@ -1399,9 +1399,11 @@ void main() {
                         varying float vPsi;
                         varying vec3 vColor;
                         varying float vDither;
+                        uniform float uAlphaBase;
+                        uniform float uAlphaScale;
                         void main() {
-                            // Slight alpha dither to reduce banding
-                            float alpha = clamp(vDither * 0.15 + 0.85, 0.0, 1.0) * 0.7;
+                            float d = clamp(vDither * 0.15 + 0.85, 0.0, 1.0);
+                            float alpha = uAlphaBase * d * clamp(abs(vPsi) * uAlphaScale, 0.0, 1.0);
                             gl_FragColor = vec4(vColor, alpha);
                         }
                     `,
@@ -1554,15 +1556,56 @@ void main() {
                         const geom = new THREE.BufferGeometry();
                         const posArr = new Float32Array(numPoints * 3);
                         const colArr = new Float32Array(numPoints * 3);
+                        const psiArr = new Float32Array(numPoints);
                         geom.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-                        geom.setAttribute('color', new THREE.BufferAttribute(colArr, 3));
+                        geom.setAttribute('aColor', new THREE.BufferAttribute(colArr, 3));
+                        geom.setAttribute('aPsi', new THREE.BufferAttribute(psiArr, 1));
                         pointsCache.geometry = geom;
-                        pointsCache.material = new THREE.PointsMaterial({ size: 0.08, vertexColors: true, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: !occlusionEnabled, depthTest: occlusionEnabled });
+                        // Build amplitude-weighted shader material similar to GPU points
+                        const rk = `${n}_${l}`;
+                        if (!radialCache[rk]) {
+                            const radTex = createRadialLUT(n, l, 1024);
+                            radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n,l,1024), maxR: radTex._maxRabs || 1 };
+                        }
+                        const radMax = radialCache[rk].maxR || 1;
+                        const angMax = Math.sqrt(estimateMaxAngular2(l, m));
+                        const ampMax = Math.max(1e-6, radMax * angMax);
+                        const alphaScale = 0.9 / ampMax;
+                        const sizeScale = alphaScale;
+                        pointsCache.material = new THREE.ShaderMaterial({
+                            uniforms: {
+                                uPointSize: { value: 0.08 },
+                                uPixelRatio: { value: renderer.getPixelRatio() },
+                                uViewportHeight: { value: renderer.getSize(new THREE.Vector2()).y },
+                                uFov: { value: camera.fov },
+                                uDitherStrength: { value: 0.12 },
+                                uAlphaBase: { value: 0.7 },
+                                uAlphaScale: { value: alphaScale },
+                                uSizeScale: { value: sizeScale }
+                            },
+                            vertexShader: `
+                                attribute vec3 aColor; attribute float aPsi;
+                                uniform float uPointSize, uPixelRatio, uViewportHeight, uFov, uDitherStrength, uSizeScale;
+                                varying vec3 vColor; varying float vPsi; varying float vDither; 
+                                float hash1(float n){ return fract(sin(n) * 43758.5453123); }
+                                void main(){ vPsi = aPsi; vColor = aColor; vec4 mv = modelViewMatrix * vec4(position,1.0);
+                                  float fov = radians(uFov); float scale = uPixelRatio * (0.5 * uViewportHeight) / tan(0.5 * fov);
+                                  float jitter = 1.0 + uDitherStrength * (hash1(float(gl_VertexID) * 17.0 + 0.123) * 2.0 - 1.0); vDither = jitter;
+                                  float sizeAmp = mix(0.6, 1.3, clamp(abs(aPsi) * uSizeScale, 0.0, 1.0));
+                                  gl_PointSize = uPointSize * (scale / -mv.z) * jitter * sizeAmp; gl_Position = projectionMatrix * mv; }
+                            `,
+                            fragmentShader: `
+                                precision highp float; varying float vPsi; varying vec3 vColor; varying float vDither; uniform float uAlphaBase; uniform float uAlphaScale; 
+                                void main(){ float d = clamp(vDither * 0.15 + 0.85, 0.0, 1.0); float alpha = uAlphaBase * d * clamp(abs(vPsi) * uAlphaScale, 0.0, 1.0); gl_FragColor=vec4(vColor, alpha); }
+                            `,
+                            transparent: true, depthWrite: !occlusionEnabled, depthTest: occlusionEnabled, blending: THREE.AdditiveBlending
+                        });
                         pointsCache.capacity = numPoints;
                     }
                     const geom = pointsCache.geometry;
                     const posArr = geom.getAttribute('position').array;
-                    const colArr = geom.getAttribute('color').array;
+                    const colArr = geom.getAttribute('aColor').array;
+                    const psiArr = geom.getAttribute('aPsi').array;
                     // Fill via rejection sampling using estimateMaxPsi2
                     const maxPsi2 = estimateMaxPsi2(n, l, m, Math.min(1200, Math.max(200, numPoints)));
                     let written = 0, attempts = 0, MAX_ATTEMPTS = numPoints * 20;
@@ -1584,11 +1627,13 @@ void main() {
                             posArr[i] = x; posArr[i+1] = y; posArr[i+2] = z;
                             const c = psi >= 0 ? colorPositive : colorNegative;
                             colArr[i] = c.r; colArr[i+1] = c.g; colArr[i+2] = c.b;
+                            psiArr[written] = psi;
                             written++;
                         }
                     }
                     geom.getAttribute('position').needsUpdate = true;
-                    geom.getAttribute('color').needsUpdate = true;
+                    geom.getAttribute('aColor').needsUpdate = true;
+                    geom.getAttribute('aPsi').needsUpdate = true;
                     const points = new THREE.Points(geom, pointsCache.material);
                     points.userData = points.userData || {};
                     points.userData.isOrbital = true;
@@ -1813,7 +1858,7 @@ void main() {
                     
                     const geom = currentOrbital.geometry;
                     const posArr = geom.getAttribute('position').array;
-                    const colArr = geom.getAttribute('color').array;
+                    const colArr = geom.getAttribute('aColor').array;
                     const numPoints = posArr.length / 3;
                     
                     if (!adaptiveEnabled) {
@@ -1890,7 +1935,7 @@ void main() {
                     }
                     
                     geom.getAttribute('position').needsUpdate = true;
-                    geom.getAttribute('color').needsUpdate = true;
+                    geom.getAttribute('aColor').needsUpdate = true;
                     return;
                 }
 
@@ -2213,6 +2258,12 @@ void main() {
                         gpuSampleMesh.material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
                         gpuSampleMesh.material.uniforms.uFov.value = camera.fov;
                     }
+                    if (pointsCache.material && pointsCache.material.uniforms) {
+                        const size = renderer.getSize(new THREE.Vector2());
+                        pointsCache.material.uniforms.uViewportHeight.value = size.y;
+                        pointsCache.material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+                        pointsCache.material.uniforms.uFov.value = camera.fov;
+                    }
                 }, 120);
             });
 
@@ -2256,6 +2307,7 @@ void main() {
 
         // (clearOrbital now lives inside onload where scene/renderer exist)
     </script>
-    <script type="module" src="./src/main.js"></script>
+    <!-- Removed duplicate module script to prevent double initialization of scene/controls -->
+    <!-- <script type="module" src="./src/main.js"></script> -->
   </body>
 </html>
