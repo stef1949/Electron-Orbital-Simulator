@@ -8,6 +8,7 @@
    <!-- Three.js + OrbitControls, pinned to r128 and loaded in order -->
     <script defer src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/RGBELoader.js"></script>
     <style>
         body {
             font-family: 'Inter', sans-serif;
@@ -233,6 +234,11 @@
             });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            // HDR / color management
+            renderer.outputEncoding = THREE.sRGBEncoding;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.0;
+            renderer.physicallyCorrectLights = true;
 
             // Set camera position and controls
             camera.position.z = 20;
@@ -250,6 +256,27 @@
             const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
             directionalLight.position.set(0, 1, 1);
             scene.add(directionalLight);
+
+            // Optional: HDR environment (keeps transparent background)
+            (function initHDREnvironment(){
+                const DEFAULT_HDR_URL = null; // e.g. 'assets/env/default.hdr' or external URL
+                if (!THREE.RGBELoader) return; // loader not available
+                const url = DEFAULT_HDR_URL;
+                if (!url) return; // skip unless a URL is provided
+                const pmrem = new THREE.PMREMGenerator(renderer);
+                pmrem.compileEquirectangularShader();
+                new THREE.RGBELoader()
+                  .setDataType(THREE.UnsignedByteType)
+                  .load(url,
+                    (hdrTex)=>{
+                        const envMap = pmrem.fromEquirectangular(hdrTex).texture;
+                        scene.environment = envMap; // keep background transparent for screenshots
+                        hdrTex.dispose(); pmrem.dispose();
+                    },
+                    undefined,
+                    (err)=>{ console.warn('HDR environment load failed:', err); pmrem.dispose(); }
+                  );
+            })();
 
             // --- Orientation overlay (bottom-right) ---
             const orientCanvas = document.getElementById('orientation-canvas');
@@ -441,8 +468,20 @@ struct FSIn {
   @location(1) alpha: f32,
 };
 
+fn saturate3(x: vec3<f32>) -> vec3<f32> { return clamp(x, vec3<f32>(0.0), vec3<f32>(1.0)); }
+fn aces_fitted(x: vec3<f32>) -> vec3<f32> {
+  // ACES tone mapping approximation
+  let a: f32 = 2.51; let b: f32 = 0.03; let c: f32 = 2.43; let d: f32 = 0.59; let e: f32 = 0.14;
+  return saturate3((x * (a * x + vec3<f32>(b))) / (x * (c * x + vec3<f32>(d)) + vec3<f32>(e)));
+}
+fn linear_to_srgb1(c: f32) -> f32 { return select(12.92 * c, 1.055 * pow(c, 1.0/2.4) - 0.055, c > 0.0031308); }
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> { return vec3<f32>(linear_to_srgb1(c.r), linear_to_srgb1(c.g), linear_to_srgb1(c.b)); }
+
 @fragment fn fs(in: FSIn) -> @location(0) vec4<f32> {
-  return vec4<f32>(in.color, in.alpha);
+  // Approximate ACES tone mapping + sRGB encode to match WebGL output
+  var col = aces_fitted(in.color);
+  col = linear_to_srgb(col);
+  return vec4<f32>(col, in.alpha);
 }`;
                 webgpu.pipeline = webgpu.device.createRenderPipeline({
                     layout: 'auto',
