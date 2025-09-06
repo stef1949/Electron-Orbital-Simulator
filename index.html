@@ -1420,7 +1420,8 @@ void main() {
                         uDitherStrength: { value: 0.12 },
                         uAlphaBase: { value: 0.7 },
                         uAlphaScale: { value: alphaScale },
-                        uSizeScale: { value: sizeScale }
+                        uSizeScale: { value: sizeScale },
+                        uBrightnessGamma: { value: 0.7 }
                     },
                     vertexShader: `
                         attribute float aIndex;
@@ -1438,6 +1439,7 @@ void main() {
                         varying vec3 vColor;
                         varying float vDither;
                         varying float vAmp;
+                        varying float vZoom;
 
                         float hash1(float n) {
                             return fract(sin(n) * 43758.5453123);
@@ -1459,10 +1461,11 @@ void main() {
                             // Match Three.js PointsMaterial size attenuation
                             float fov = radians(uFov);
                             float scale = uPixelRatio * (0.5 * uViewportHeight) / tan(0.5 * fov);
+                            vZoom = scale / max(0.1, -mvPosition.z);
                             float jitter = 1.0 + uDitherStrength * (hash1(id * 17.0 + 0.123) * 2.0 - 1.0);
                             vDither = jitter;
                             float sizeAmp = mix(0.6, 1.3, clamp(vAmp * uSizeScale, 0.0, 1.0));
-                            gl_PointSize = uPointSize * (scale / -mvPosition.z) * jitter * sizeAmp;
+                            gl_PointSize = uPointSize * vZoom * jitter * sizeAmp;
                             gl_Position = projectionMatrix * mvPosition;
                         }
                     `,
@@ -1470,12 +1473,13 @@ void main() {
                         precision highp float;
                         varying float vPsi;
                         varying vec3 vColor;
-                        varying float vDither;
-                        uniform float uAlphaBase;
-                        uniform float uAlphaScale;
+                        varying float vDither; varying float vZoom;
+                        uniform float uAlphaBase; uniform float uAlphaScale; uniform float uBrightnessGamma;
                         void main() {
+                            vec2 uv = gl_PointCoord*2.0 - 1.0; float r = length(uv); float mask = smoothstep(1.0, 0.85, 1.0 - r);
                             float d = clamp(vDither * 0.15 + 0.85, 0.0, 1.0);
-                            float alpha = uAlphaBase * d * clamp(abs(vPsi) * uAlphaScale, 0.0, 1.0);
+                            float alpha = uAlphaBase * d * clamp(abs(vPsi) * uAlphaScale, 0.0, 1.0) * pow(vZoom, uBrightnessGamma) * mask;
+                            if (alpha <= 0.001) discard;
                             gl_FragColor = vec4(vColor, alpha);
                         }
                     `,
@@ -1667,8 +1671,20 @@ void main() {
                                   gl_PointSize = uPointSize * (scale / -mv.z) * jitter * sizeAmp; gl_Position = projectionMatrix * mv; }
                             `,
                             fragmentShader: `
-                                precision highp float; varying float vPsi; varying vec3 vColor; varying float vDither; uniform float uAlphaBase; uniform float uAlphaScale; 
-                                void main(){ float d = clamp(vDither * 0.15 + 0.85, 0.0, 1.0); float alpha = uAlphaBase * d * clamp(abs(vPsi) * uAlphaScale, 0.0, 1.0); gl_FragColor=vec4(vColor, alpha); }
+                                precision highp float; varying float vPsi; varying vec3 vColor; varying float vDither; varying float vZoom; 
+                                uniform float uAlphaBase; uniform float uAlphaScale; uniform float uBrightnessGamma; 
+                                void main(){ 
+                                  // circular point sprite with soft edge
+                                  vec2 uv = gl_PointCoord * 2.0 - 1.0; 
+                                  float r = length(uv);
+                                  float mask = smoothstep(1.0, 0.85, 1.0 - r);
+                                  float d = clamp(vDither * 0.15 + 0.85, 0.0, 1.0);
+                                  float amp = clamp(abs(vPsi) * uAlphaScale, 0.0, 1.0);
+                                  float zoomGain = pow(vZoom, uBrightnessGamma);
+                                  float alpha = uAlphaBase * d * amp * zoomGain * mask;
+                                  if (alpha <= 0.001) discard; 
+                                  gl_FragColor=vec4(vColor, alpha); 
+                                }
                             `,
                             transparent: true, depthWrite: !occlusionEnabled, depthTest: occlusionEnabled, blending: THREE.AdditiveBlending
                         });
