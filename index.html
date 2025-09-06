@@ -125,6 +125,31 @@
             color: #a0aec0;
             z-index: 10;
         }
+        /* Orientation overlay */
+        #orientation-overlay {
+            position: fixed;
+            left: 12px;
+            bottom: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.4rem;
+            z-index: 20;
+            pointer-events: none; /* canvas non-interactive; buttons enabled individually */
+        }
+        #orientation-canvas {
+            width: 96px; height: 96px;
+            border-radius: 10px;
+            background: rgba(0,0,0,0.06);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+        }
+        #orientation-buttons { display: flex; gap: 0.25rem; pointer-events: auto; }
+        .orient-btn { 
+            padding: 0.2rem 0.5rem; border: none; border-radius: 6px;
+            background: #333; color: #fff; font-weight: 700; font-size: 0.8rem; cursor: pointer;
+        }
+        .orient-btn:hover { background: #777; }
+        .orient-btn:active { transform: translateY(1px); }
     </style>
 </head>
 <body>
@@ -177,6 +202,15 @@
                 <button id="screenshot-button" class="orbital-button">Save PNG</button>
             </div>
             <div id="fps-counter"> FPS:0 </div>
+            <div id="orientation-overlay">
+                <canvas id="orientation-canvas" width="140" height="140"></canvas>
+                <div id="orientation-buttons">
+                    <button id="snap-x" class="orient-btn">X</button>
+                    <button id="snap-y" class="orient-btn">Y</button>
+                    <button id="snap-z" class="orient-btn">Z</button>
+                    <button id="reset-orient" class="orient-btn">Reset</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -214,6 +248,45 @@
             directionalLight.position.set(0, 1, 1);
             scene.add(directionalLight);
 
+            // --- Orientation overlay (bottom-right) ---
+            const orientCanvas = document.getElementById('orientation-canvas');
+            const orientRenderer = new THREE.WebGLRenderer({ canvas: orientCanvas, alpha: true, antialias: true });
+            orientRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            // Physical buffer size kept small for perf; CSS scales presentation
+            orientRenderer.setSize(140, 140, false);
+            const orientScene = new THREE.Scene();
+            const orientCam = new THREE.PerspectiveCamera(70, 1, 0.1, 20);
+            orientCam.position.set(0, 0, 2.4);
+            // Build a thicker axes gizmo (mesh-based) so it renders bold on WebGL
+            function buildThickAxes(length = 1.3, radius = 0.06, headLength = 0.24, headRadius = 0.12) {
+                const group = new THREE.Group();
+                const segs = 16;
+                function makeAxis(color, axis) {
+                    const shaftLen = Math.max(0.001, length - headLength);
+                    const mat = new THREE.MeshBasicMaterial({ color, toneMapped: false });
+                    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, shaftLen, segs), mat);
+                    const head = new THREE.Mesh(new THREE.ConeGeometry(headRadius, headLength, segs), mat);
+                    if (axis === 'x') {
+                        shaft.rotation.z = Math.PI / 2; shaft.position.x = shaftLen / 2;
+                        head.rotation.z = Math.PI / 2; head.position.x = shaftLen + headLength / 2;
+                    } else if (axis === 'y') {
+                        shaft.position.y = shaftLen / 2;
+                        head.position.y = shaftLen + headLength / 2;
+                    } else { // 'z'
+                        shaft.rotation.x = -Math.PI / 2; shaft.position.z = shaftLen / 2;
+                        head.rotation.x = -Math.PI / 2; head.position.z = shaftLen + headLength / 2;
+                    }
+                    const g = new THREE.Group(); g.add(shaft); g.add(head); return g;
+                }
+                group.add(makeAxis(0xff5555, 'x'));
+                group.add(makeAxis(0x55ff55, 'y'));
+                group.add(makeAxis(0x5588ff, 'z'));
+                return group;
+            }
+            const axesRoot = new THREE.Object3D();
+            axesRoot.add(buildThickAxes(1.35, 0.07, 0.28, 0.14));
+            orientScene.add(axesRoot);
+
             // --- Orbital Visualization ---
             let currentOrbital = null;
             let currentOrbitalData = { n: 2, l: 1, m: -1 }; // Track the current orbital
@@ -228,25 +301,528 @@
             const ADAPTIVE_BASE_ATTEMPTS_FACTOR = 6; // attempts per instance baseline
             const SUBSET_RESAMPLE_FRACTION = 0.05; // fraction of instances updated per adaptive frame
             const EMA_ALPHA = 0.25; // smoothing factor for maxPsi2
-            let renderMode = 'instanced'; // 'instanced' or 'points'
+            let renderMode = 'webgpu'; // 'instanced', 'points', 'gpu' (WebGL sampling), 'webgpu'
             // renderMode can also be 'gpu' for GPU-based sampling + point-cloud shader
             let occlusionEnabled = false; // toggles depth-based occlusion culling
             let impostorEnabled = false; // toggles impostor rendering for instanced mode (billboard quads instead of spheres)
             // Points mode reusable buffers
             let pointsCache = { geometry: null, material: null, capacity: 0 };
-            const maxRadius = 30;
+            const maxRadius = 40;
             const colorPositive = new THREE.Color(0x2e64e1); // A vibrant blue
             const colorNegative = new THREE.Color(0xff6666); // A vibrant red
-            const ACCEPTANCE_SCALE = 10; // Acceptance probability scale factor
+            const ACCEPTANCE_SCALE = 130; // Acceptance probability scale factor
             const dummyObject3D = new THREE.Object3D(); // For instanced transforms
 
-            // --- GPU sampling resources ---
+            // --- Experimental WebGPU mode (independent of Three.js) ---
+            let webgpuSupported = !!navigator.gpu;
+            let webgpu = {
+                initialized: false,
+                device: null,
+                context: null,
+                canvas: null,
+                format: null,
+                pipeline: null,
+                computePipeline: null,
+                uniformBuffer: null,
+                computeUniformBuffer: null,
+                particleBuffer: null,
+                invRBuffer: null,
+                invThetaBuffer: null,
+                invPhiBuffer: null,
+                rngStateBuffer: null,
+                bindGroup: null,
+                computeBindGroup: null,
+                sampleData: null,
+                numPoints: 0,
+                uniforms: { projection: new Float32Array(16), view: new Float32Array(16), pointSize: 0.08 },
+                _uniformStaging: new Float32Array(16 + 16 + 4),
+                _computeStaging: new ArrayBuffer(64), // for Params struct
+                camera: { distance: 40, yaw: 0.8, pitch: 0.6, dragging: false, lastX:0, lastY:0 }
+            };
+
+            function mat4Perspective(out, fovy, aspect, near, far) {
+                const f = 1.0 / Math.tan(fovy / 2);
+                out[0]=f/aspect; out[1]=0; out[2]=0; out[3]=0;
+                out[4]=0; out[5]=f; out[6]=0; out[7]=0;
+                out[8]=0; out[9]=0; out[10]=(far+near)/(near-far); out[11]=-1;
+                out[12]=0; out[13]=0; out[14]=(2*far*near)/(near-far); out[15]=1;
+            }
+            function mat4LookAt(out, eye, center, up) {
+                let zx = eye[0]-center[0], zy = eye[1]-center[1], zz = eye[2]-center[2];
+                let len = Math.hypot(zx,zy,zz); zx/=len; zy/=len; zz/=len; // z axis
+                let xx = up[1]*zz - up[2]*zy;
+                let xy = up[2]*zx - up[0]*zz;
+                let xz = up[0]*zy - up[1]*zx;
+                len = Math.hypot(xx,xy,xz); if(len){xx/=len;xy/=len;xz/=len;}
+                let yx = zy*xz - zz*xy;
+                let yy = zz*xx - zx*xz;
+                let yz = zx*xy - zy*xx;
+                out[0]=xx; out[1]=yx; out[2]=zx; out[3]=0;
+                out[4]=xy; out[5]=yy; out[6]=zy; out[7]=0;
+                out[8]=xz; out[9]=yz; out[10]=zz; out[11]=0;
+                out[12]=-(xx*eye[0]+xy*eye[1]+xz*eye[2]);
+                out[13]=-(yx*eye[0]+yy*eye[1]+yz*eye[2]);
+                out[14]=-(zx*eye[0]+zy*eye[1]+zz*eye[2]);
+                out[15]=1;
+            }
+            function updateWebGPUCamera() {
+                const c = webgpu.camera;
+                const x = c.distance * Math.sin(c.yaw) * Math.cos(c.pitch);
+                const y = c.distance * Math.sin(c.pitch);
+                const z = c.distance * Math.cos(c.yaw) * Math.cos(c.pitch);
+                mat4LookAt(webgpu.uniforms.view, [x,y,z], [0,0,0], [0,1,0]);
+            }
+            async function initWebGPU() {
+                if (!webgpuSupported) { console.warn('WebGPU not supported'); return false; }
+                if (webgpu.initialized) return true;
+                webgpu.canvas = document.createElement('canvas');
+                webgpu.canvas.id = 'webgpu-canvas';
+                webgpu.canvas.style.position='absolute';
+                webgpu.canvas.style.top='0';
+                webgpu.canvas.style.left='0';
+                webgpu.canvas.style.width='100%';
+                webgpu.canvas.style.height='100%';
+                webgpu.canvas.style.zIndex='5';
+                document.getElementById('canvas-container').appendChild(webgpu.canvas);
+                try {
+                    const adapter = await navigator.gpu.requestAdapter();
+                    if(!adapter){ console.warn('No WebGPU adapter'); return false; }
+                    const device = await adapter.requestDevice();
+                    const ctx = webgpu.canvas.getContext('webgpu');
+                    const format = navigator.gpu.getPreferredCanvasFormat();
+                    ctx.configure({ device, format, alphaMode:'premultiplied'});
+                    webgpu.device = device; webgpu.context = ctx; webgpu.format = format;
+                } catch (e) { console.warn('WebGPU init failed', e); return false; }
+                // Uniform buffer (projection + view + pointSize vec4)
+                webgpu.uniformBuffer = webgpu.device.createBuffer({ size: (16+16+4)*4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+                const shader = `
+struct Particle { pos: vec4<f32>, };
+struct Uniforms { projection: mat4x4<f32>, view: mat4x4<f32>, pointSize: vec4<f32>, };
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var<storage, read> particles: array<Particle>;
+
+struct VSOut {
+  @builtin(position) position: vec4<f32>,
+  @location(0) color: vec3<f32>,
+  @location(1) alpha: f32,
+};
+
+@vertex fn vs(@builtin(instance_index) inst: u32, @builtin(vertex_index) vid: u32) -> VSOut {
+  var out: VSOut;
+  let p = particles[inst].pos;
+  let quad = array<vec2<f32>,4>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 1.0, -1.0),
+    vec2<f32>(-1.0,  1.0),
+    vec2<f32>( 1.0,  1.0)
+  );
+  let wpos = uniforms.view * vec4<f32>(p.xyz, 1.0);
+  var clip = uniforms.projection * wpos;
+  let size = uniforms.pointSize.x;
+  let offs = quad[vid] * size * (20.0 / max(0.1, -wpos.z));
+  let xy = clip.xy + offs;
+  clip = vec4<f32>(xy, clip.zw);
+  out.position = clip;
+  let colorPos = vec3<f32>(0.18, 0.39, 0.88);
+  let colorNeg = vec3<f32>(1.0, 0.4, 0.4);
+  out.color = select(colorNeg, colorPos, p.w >= 0.0);
+  out.alpha = 0.65;
+  return out;
+}
+
+struct FSIn {
+  @location(0) color: vec3<f32>,
+  @location(1) alpha: f32,
+};
+
+@fragment fn fs(in: FSIn) -> @location(0) vec4<f32> {
+  return vec4<f32>(in.color, in.alpha);
+}`;
+                webgpu.pipeline = webgpu.device.createRenderPipeline({
+                    layout: 'auto',
+                    vertex: { module: webgpu.device.createShaderModule({ code: shader }), entryPoint: 'vs' },
+                    fragment: { module: webgpu.device.createShaderModule({ code: shader }), entryPoint:'fs', targets:[{ format: webgpu.format, blend:{ color:{srcFactor:'one',dstFactor:'one'}, alpha:{srcFactor:'one',dstFactor:'one'} } }] },
+                    primitive: { topology:'triangle-strip' }
+                });
+
+                // Compute shader generates samples entirely on GPU and advances RNG states
+                const computeWGSL = `
+struct Particle { pos: vec4<f32>, };
+struct Params {
+  radialSize: u32,
+  thetaSize: u32,
+  phiSize: u32,
+  numPoints: u32,
+  seed: u32,
+  frame: u32,
+  _pad: u32,
+  maxRadius: f32,
+  l: f32,
+  m: f32,
+  n: f32,
+};
+
+@group(0) @binding(0) var<storage, read> invR: array<f32>;
+@group(0) @binding(1) var<storage, read> invTheta: array<f32>;
+@group(0) @binding(2) var<storage, read> invPhi: array<f32>;
+@group(0) @binding(3) var<storage, read_write> rngStates: array<u32>;
+@group(0) @binding(4) var<storage, read_write> particles: array<Particle>;
+@group(0) @binding(5) var<uniform> params: Params;
+
+fn lcg(n: u32) -> u32 { return n * 1664525u + 1013904223u; }
+fn xs32(x: u32) -> u32 {
+  var v = x;
+  v = v ^ (v << 13u);
+  v = v ^ (v >> 17u);
+  v = v ^ (v << 5u);
+  return v;
+}
+fn rand01(n: ptr<function, u32>) -> f32 {
+  (*n) = xs32(lcg(*n));
+  return f32((*n) & 16777215u) / 16777216.0;
+}
+
+// invR/invTheta are RGBA-packed; use R component at index*4
+fn sample1D_R(size: u32, u: f32) -> f32 {
+  let x = clamp(u, 0.0, 1.0) * f32(max(1u, size) - 1u);
+  let i0 = u32(floor(x));
+  let i1 = min(i0 + 1u, max(1u, size) - 1u);
+  let t = x - f32(i0);
+  let a = invR[i0 * 4u];
+  let b = invR[i1 * 4u];
+  return mix(a, b, t);
+}
+fn sample1D_T(size: u32, u: f32) -> f32 {
+  let x = clamp(u, 0.0, 1.0) * f32(max(1u, size) - 1u);
+  let i0 = u32(floor(x));
+  let i1 = min(i0 + 1u, max(1u, size) - 1u);
+  let t = x - f32(i0);
+  let a = invTheta[i0 * 4u];
+  let b = invTheta[i1 * 4u];
+  return mix(a, b, t);
+}
+fn samplePhi(row: u32, u: f32) -> f32 {
+  let size = params.phiSize;
+  let base = row * size * 4u;
+  let x = clamp(u, 0.0, 1.0) * f32(max(1u, size) - 1u);
+  let j0 = u32(floor(x));
+  let j1 = min(j0 + 1u, max(1u, size) - 1u);
+  let t = x - f32(j0);
+  let a = invPhi[base + j0 * 4u];
+  let b = invPhi[base + j1 * 4u];
+  return mix(a, b, t);
+}
+
+fn fact(n:i32)->f32{ var f:f32=1.0; for(var i:i32=2;i<=8;i=i+1){ if(i>n){break;} f=f*f32(i);} return f; }
+fn assocP(l:i32, m:i32, x:f32)->f32{
+  var pmm:f32 = 1.0;
+  if (m>0) {
+    let somx2 = sqrt(max(0.0, 1.0 - x*x));
+    var odd:f32 = 1.0;
+    for (var i:i32=1; i<=8; i=i+1) { if (i>m) { break; } odd = odd * f32(2*i - 1); }
+    let sign = select(-1.0, 1.0, (m & 1) == 0);
+    pmm = sign * odd * pow(somx2, f32(m));
+  }
+  if (l==m) { return pmm; }
+  var pmmp1:f32 = x * f32(2*m + 1) * pmm;
+  if (l==m+1) { return pmmp1; }
+  var pmmPrev:f32 = pmm; var pmml:f32 = pmmp1; var pll:f32 = 0.0;
+  for (var L:i32=m+2; L<=8; L=L+1) {
+    if (L>l) { break; }
+    pll = ((f32(2*L-1))*x*pmml - f32(L+m-1)*pmmPrev) / f32(L-m);
+    pmmPrev = pmml; pmml = pll;
+  }
+  return pmml;
+}
+fn getAngular(theta: f32, phi: f32, l: f32, m: f32) -> f32 {
+  let PI:f32 = 3.141592653589793;
+  let li:i32 = i32(l + 0.5);
+  let mi:i32 = i32(abs(m) + 0.5);
+  let x = cos(theta);
+  let Plm = assocP(li, mi, x);
+  let norm = sqrt(((2.0*f32(li)+1.0)/(4.0*PI)) * (fact(li-mi) / max(1.0, fact(li+mi))));
+  if (mi==0) { return norm * Plm; }
+  let base = sqrt(2.0) * norm * Plm;
+  return select(base * sin(f32(mi)*phi), base * cos(f32(mi)*phi), m > 0.0);
+}
+
+@compute @workgroup_size(256)
+fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let id = gid.x;
+  if (id >= params.numPoints) { return; }
+  var state = rngStates[id];
+  if (state == 0u) { state = lcg(id ^ params.seed ^ params.frame); }
+  // u1,u2,u3 in [0,1)
+  let u1 = rand01(&state);
+  let u2 = rand01(&state);
+  let u3 = rand01(&state);
+
+  // radius, theta, phi via inverse CDF tables
+  let rNorm = sample1D_R(params.radialSize, u1);
+  let r = rNorm * params.maxRadius;
+  let tNorm = sample1D_T(params.thetaSize, u2);
+  let theta = tNorm * 3.14159265;
+  let rowf = clamp(tNorm * f32(params.thetaSize - 1u), 0.0, f32(params.thetaSize - 1u));
+  let row0 = u32(floor(rowf));
+  let row1 = min(params.thetaSize - 1u, row0 + 1u);
+  let fr = rowf - f32(row0);
+  let p0 = samplePhi(row0, u3);
+  let p1 = samplePhi(row1, u3);
+  let pNorm = mix(p0, p1, fr);
+  let phi = pNorm * 6.2831853;
+
+  let st = sin(theta);
+  let ct = cos(theta);
+  let x = r * st * cos(phi);
+  let y = r * st * sin(phi);
+  let z = r * ct;
+  // Include radial phase (sign) via associated Laguerre, to match real hydrogenic wavefunction phase
+  let rho = 2.0 * r / params.n;
+  let alpha = 2.0 * params.l + 1.0;
+  // Recurrence for L_p^alpha(rho)
+  let pInt: u32 = u32(max(0.0, params.n - params.l - 1.0));
+  var Lkm2: f32 = 1.0;
+  var Lkm1: f32 = -rho + alpha + 1.0;
+  if (pInt == 0u) { Lkm1 = 1.0; }
+  else if (pInt == 1u) { /* Lkm1 already set */ }
+  else {
+    for (var k:u32=2u; k<=pInt; k=k+1u) {
+      let a = (2.0* f32(k-1u) + alpha + 1.0 - rho) * Lkm1;
+      let b = (f32(k-1u) + alpha) * Lkm2;
+      let Lk = (a - b) / f32(k);
+      Lkm2 = Lkm1; Lkm1 = Lk;
+    }
+  }
+  let signR = select(-1.0, 1.0, Lkm1 >= 0.0);
+  let psi = signR * getAngular(theta, phi, params.l, params.m);
+  particles[id].pos = vec4<f32>(x, y, z, psi);
+  rngStates[id] = state;
+}`;
+                webgpu.computePipeline = webgpu.device.createComputePipeline({
+                    layout: 'auto',
+                    compute: { module: webgpu.device.createShaderModule({ code: computeWGSL }), entryPoint: 'cs' }
+                });
+
+                // Compute uniforms buffer
+                webgpu.computeUniformBuffer = webgpu.device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+                // Interaction
+                webgpu.canvas.addEventListener('mousedown', e=>{ webgpu.camera.dragging=true; webgpu.camera.lastX=e.clientX; webgpu.camera.lastY=e.clientY; });
+                window.addEventListener('mouseup', ()=> webgpu.camera.dragging=false);
+                window.addEventListener('mousemove', e=>{ if(!webgpu.camera.dragging) return; const dx=(e.clientX-webgpu.camera.lastX)*0.005; const dy=(e.clientY-webgpu.camera.lastY)*0.005; webgpu.camera.yaw+=dx; webgpu.camera.pitch=Math.max(-1.2, Math.min(1.2, webgpu.camera.pitch+dy)); webgpu.camera.lastX=e.clientX; webgpu.camera.lastY=e.clientY; });
+                webgpu.canvas.addEventListener('wheel', e=>{ webgpu.camera.distance = Math.max(2, Math.min(60, webgpu.camera.distance + e.deltaY*0.01)); });
+                webgpu.initialized = true;
+                return true;
+            }
+            // Importance-sampled CPU generator using cached inverse-CDF tables
+            function generateOrbitalSamplesCPU_WebGPU(n,l,m,numPoints) {
+                const data = new Float32Array(numPoints * 4);
+                // Ensure LUTs/tables exist
+                const rk = `${n}_${l}`;
+                if (!radialCache[rk]) {
+                    const radTex = createRadialLUT(n, l, 1024);
+                    radialCache[rk] = {
+                        radial: radTex,
+                        invCdf: createRadialInvCDF(n, l, 1024),
+                        maxR: radTex._maxRabs || 1
+                    };
+                }
+                const ak = `${l}_${m}`;
+                if (!angularCache[ak]) {
+                    angularCache[ak] = createAngularInvTables(l, m, 256, 256);
+                }
+                const invR = radialCache[rk].invCdf._cpuArray; // normalized r in R channel
+                const rSize = radialCache[rk].invCdf.image.width;
+                const invTheta = angularCache[ak].invThetaData; // normalized theta in [0,1]
+                const thetaSize = angularCache[ak].thetaSize;
+                const invPhi = angularCache[ak].invPhiData; // normalized phi per theta row
+                const phiSize = angularCache[ak].phiSize;
+                function sample1D(arr, size, u) {
+                    const x = u * (size - 1);
+                    const i0 = Math.max(0, Math.min(size - 1, Math.floor(x)));
+                    const i1 = Math.min(size - 1, i0 + 1);
+                    const t = x - i0;
+                    const a = arr[i0 * 4];
+                    const b = arr[i1 * 4];
+                    return a + (b - a) * t;
+                }
+                function samplePhiRow(arr, thetaIndex, u) {
+                    const base = thetaIndex * phiSize * 4;
+                    const x = u * (phiSize - 1);
+                    const j0 = Math.max(0, Math.min(phiSize - 1, Math.floor(x)));
+                    const j1 = Math.min(phiSize - 1, j0 + 1);
+                    const t = x - j0;
+                    const a = arr[base + j0 * 4];
+                    const b = arr[base + j1 * 4];
+                    return a + (b - a) * t;
+                }
+                for (let i = 0; i < numPoints; i++) {
+                    const u1 = Math.random();
+                    const u2 = Math.random();
+                    const u3 = Math.random();
+                    const rNorm = sample1D(invR, rSize, u1);
+                    const r = rNorm * maxRadius;
+                    const thetaNorm = sample1D(invTheta, thetaSize, u2);
+                    const theta = thetaNorm * Math.PI;
+                    const row = Math.min(thetaSize - 1, Math.floor(thetaNorm * (thetaSize - 1)));
+                    const phiNorm = samplePhiRow(invPhi, row, u3);
+                    const phi = phiNorm * 2 * Math.PI;
+                    const sinTheta = Math.sin(theta);
+                    const x = r * sinTheta * Math.cos(phi);
+                    const y = r * sinTheta * Math.sin(phi);
+                    const z = r * Math.cos(theta);
+                    const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
+                    const o = i * 4; data[o] = x; data[o + 1] = y; data[o + 2] = z; data[o + 3] = psi;
+                }
+                return data;
+            }
+            function ensureWebGPUParticles() {
+                if (renderMode !== 'webgpu' || !webgpu.initialized) return;
+                const { n,l,m } = currentOrbitalData;
+                const numPoints = parseInt(densitySlider.value);
+                if (webgpu.numPoints !== numPoints) {
+                    webgpu.numPoints = numPoints;
+                }
+                // Ensure sampling tables exist and are on GPU
+                const rk = `${n}_${l}`;
+                if (!radialCache[rk]) {
+                    const radTex = createRadialLUT(n, l, 1024);
+                    radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n, l, 1024), maxR: radTex._maxRabs || 1 };
+                }
+                const ak = `${l}_${m}`;
+                if (!angularCache[ak]) {
+                    angularCache[ak] = createAngularInvTables(l, m, 256, 256);
+                }
+                const invR = radialCache[rk].invCdf._cpuArray;
+                const rSize = radialCache[rk].invCdf.image.width;
+                const invT = angularCache[ak].invThetaData;
+                const tSize = angularCache[ak].thetaSize;
+                const invP = angularCache[ak].invPhiData;
+                const pSize = angularCache[ak].phiSize;
+
+                // Upload or resize GPU buffers as needed
+                const device = webgpu.device;
+                const BYTES = 4;
+                const invRBytes = rSize * 4 * BYTES;
+                if (!webgpu.invRBuffer || webgpu._invRBytes !== invRBytes) {
+                    webgpu.invRBuffer?.destroy?.();
+                    webgpu.invRBuffer = device.createBuffer({ size: invRBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+                    webgpu._invRBytes = invRBytes;
+                }
+                device.queue.writeBuffer(webgpu.invRBuffer, 0, invR);
+                const invTBytes = tSize * 4 * BYTES;
+                if (!webgpu.invThetaBuffer || webgpu._invThetaBytes !== invTBytes) {
+                    webgpu.invThetaBuffer?.destroy?.();
+                    webgpu.invThetaBuffer = device.createBuffer({ size: invTBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+                    webgpu._invThetaBytes = invTBytes;
+                }
+                device.queue.writeBuffer(webgpu.invThetaBuffer, 0, invT);
+                const invPhiBytes = tSize * pSize * 4 * BYTES;
+                if (!webgpu.invPhiBuffer || webgpu._invPhiBytes !== invPhiBytes) {
+                    webgpu.invPhiBuffer?.destroy?.();
+                    webgpu.invPhiBuffer = device.createBuffer({ size: invPhiBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+                    webgpu._invPhiBytes = invPhiBytes;
+                }
+                device.queue.writeBuffer(webgpu.invPhiBuffer, 0, invP);
+
+                // Ensure particle and RNG buffers
+                const particleBytes = numPoints * 4 * BYTES;
+                if (!webgpu.particleBuffer || webgpu._particleBytes !== particleBytes) {
+                    webgpu.particleBuffer?.destroy?.();
+                    webgpu.particleBuffer = device.createBuffer({ size: particleBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+                    webgpu._particleBytes = particleBytes;
+                }
+                const rngBytes = numPoints * BYTES;
+                if (!webgpu.rngStateBuffer || webgpu._rngBytes !== rngBytes) {
+                    webgpu.rngStateBuffer?.destroy?.();
+                    webgpu.rngStateBuffer = device.createBuffer({ size: rngBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+                    webgpu._rngBytes = rngBytes;
+                    // zero-initialize seeds; compute will hash based on id+seed
+                    device.queue.writeBuffer(webgpu.rngStateBuffer, 0, new Uint32Array(numPoints));
+                }
+
+                // Bind groups for render and compute
+                webgpu.bindGroup = device.createBindGroup({ layout: webgpu.pipeline.getBindGroupLayout(0), entries:[
+                    { binding:0, resource:{ buffer: webgpu.uniformBuffer } },
+                    { binding:1, resource:{ buffer: webgpu.particleBuffer } }
+                ]});
+                webgpu.computeBindGroup = device.createBindGroup({ layout: webgpu.computePipeline.getBindGroupLayout(0), entries:[
+                    { binding:0, resource:{ buffer: webgpu.invRBuffer } },
+                    { binding:1, resource:{ buffer: webgpu.invThetaBuffer } },
+                    { binding:2, resource:{ buffer: webgpu.invPhiBuffer } },
+                    { binding:3, resource:{ buffer: webgpu.rngStateBuffer } },
+                    { binding:4, resource:{ buffer: webgpu.particleBuffer } },
+                    { binding:5, resource:{ buffer: webgpu.computeUniformBuffer } }
+                ]});
+            }
+            function renderWebGPUFrame() {
+                if (renderMode !== 'webgpu' || !webgpu.initialized) return;
+                const device = webgpu.device;
+                const canvas = webgpu.canvas;
+                // Gate DPR for high densities
+                const HIGH_DENSITY_THRESHOLD = 60000;
+                const MAX_DPR_HIGH = 1.25;
+                const dpr = (webgpu.numPoints > HIGH_DENSITY_THRESHOLD) ? MAX_DPR_HIGH : window.devicePixelRatio;
+                const w = Math.floor(canvas.clientWidth * dpr);
+                const h = Math.floor(canvas.clientHeight * dpr);
+                if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+                mat4Perspective(webgpu.uniforms.projection, camera.fov * Math.PI/180, w/h, 0.1, 1000);
+                updateWebGPUCamera();
+                const u = webgpu._uniformStaging;
+                u.set(webgpu.uniforms.projection, 0);
+                u.set(webgpu.uniforms.view, 16);
+                u[32] = webgpu.uniforms.pointSize;
+                device.queue.writeBuffer(webgpu.uniformBuffer, 0, u.buffer);
+                ensureWebGPUParticles();
+                // Update compute uniforms (sizes, seed, frame, maxRadius, l,m)
+                const rk = `${currentOrbitalData.n}_${currentOrbitalData.l}`;
+                const ak = `${currentOrbitalData.l}_${currentOrbitalData.m}`;
+                const rSize = radialCache[rk].invCdf.image.width >>> 0;
+                const tSize = angularCache[ak].thetaSize >>> 0;
+                const pSize = angularCache[ak].phiSize >>> 0;
+                const paramsBuf = new DataView(webgpu._computeStaging);
+                paramsBuf.setUint32(0, rSize, true);
+                paramsBuf.setUint32(4, tSize, true);
+                paramsBuf.setUint32(8, pSize, true);
+                paramsBuf.setUint32(12, webgpu.numPoints >>> 0, true);
+                // Persisted RNG base seed (set once at init)
+                if (!webgpu.rngSeed) webgpu.rngSeed = ((Math.random() * 1e9) | 0) >>> 0;
+                paramsBuf.setUint32(16, webgpu.rngSeed >>> 0, true);
+                paramsBuf.setUint32(20, (adaptiveFrame | 0) >>> 0, true);
+                paramsBuf.setUint32(24, 0, true);
+                paramsBuf.setFloat32(28, maxRadius, true);
+                paramsBuf.setFloat32(32, currentOrbitalData.l, true);
+                paramsBuf.setFloat32(36, currentOrbitalData.m, true);
+                paramsBuf.setFloat32(40, currentOrbitalData.n, true);
+                device.queue.writeBuffer(webgpu.computeUniformBuffer, 0, webgpu._computeStaging);
+
+                const encoder = device.createCommandEncoder();
+                // Compute pass to generate/update samples fully on GPU
+                const cpass = encoder.beginComputePass();
+                cpass.setPipeline(webgpu.computePipeline);
+                cpass.setBindGroup(0, webgpu.computeBindGroup);
+                const wgSize = 256;
+                const numWG = Math.ceil(webgpu.numPoints / wgSize);
+                cpass.dispatchWorkgroups(numWG);
+                cpass.end();
+                const pass = encoder.beginRenderPass({ colorAttachments:[{ view: webgpu.context.getCurrentTexture().createView(), loadOp:'clear', storeOp:'store', clearValue:{r:0,g:0,b:0,a:0} }] });
+                pass.setPipeline(webgpu.pipeline);
+                pass.setBindGroup(0, webgpu.bindGroup);
+                pass.draw(4, webgpu.numPoints, 0, 0);
+                pass.end();
+                device.queue.submit([encoder.finish()]);
+            }
+
+            // --- GPU sampling resources (WebGL2) ---
             let gpuSampleTarget = null; // render target where samples are written (RGBA32F)
             let gpuSampleMesh = null; // points mesh that reads from the render target
             let gpuQuadScene = null; // scene used to render sampling quad
             let gpuRadialLUT = null; // DataTexture (1D) for radial lookup
             let gpuLUTSize = 0;
-            const radialLUTCache = {}; // cache DataTextures per (n,l)
+            // Cache per (n,l): { radial: DataTexture, invCdf: DataTexture }
+            const radialCache = {};
+            // Cache per (l,m): { invTheta: DataTexture, invPhi: DataTexture, thetaSize: number, phiSize: number }
+            const angularCache = {};
+            let gpuSupportLogged = false; // avoid spamming support log
 
             // Estimate maximum |psi|^2 via random sampling for rejection sampling normalization
             function estimateMaxPsi2(n, l, m, samples = 1000) {
@@ -263,67 +839,57 @@
                 return maxPsi2 > 0 ? maxPsi2 : 1e-6;
             }
 
-            // Calculates the wave function value (which can be positive or negative)
-            // Note: This is a simplified, real-valued version for visualization.
-            function getWaveFunctionValue(n, l, m, r, theta, phi) {
-                let radial_part = 0;
-                let angular_part = 0;
-
-                // Radial part R(r) - hydrogenic-like using associated Laguerre polynomials (unnormalized)
-                // Uses x = 2r/n and L^{alpha}_p where p = n-l-1, alpha = 2l+1
-                if (n <= l) {
-                    radial_part = 0;
-                } else {
-                    const x = 2 * r / n;
-                    const p = n - l - 1;
-                    const alpha = 2 * l + 1;
-                    let L = 1;
-                    // Associated Laguerre polynomials for p = 0..3 (covers n <= 4)
-                    if (p === 0) {
-                        L = 1;
-                    } else if (p === 1) {
-                        // L^{alpha}_1(x) = -x + alpha + 1
-                        L = -x + (alpha + 1);
-                    } else if (p === 2) {
-                        // L^{alpha}_2(x) = 1/2 (x^2 - 2(alpha+2)x + (alpha+1)(alpha+2))
-                        L = 0.5 * (x * x - 2 * (alpha + 2) * x + (alpha + 1) * (alpha + 2));
-                    } else if (p === 3) {
-                        // L^{alpha}_3(x) = 1/6 (-x^3 + 3(alpha+3)x^2 - 3(alpha+2)(alpha+3)x + (alpha + 1)(alpha + 2)(alpha + 3))
-                        L = (1 / 6) * (-x * x * x + 3 * (alpha + 3) * x * x - 3 * (alpha + 2) * (alpha + 3) * x + (alpha + 1) * (alpha + 2) * (alpha + 3));
-                    } else {
-                        // For larger p fallback to a simple exponential times polynomial approximation
-                        L = 1;
-                    }
-                    radial_part = Math.pow(x, l) * L * Math.exp(-x / 2);
+            // Accurate hydrogenic components
+            function fact(n){ let f=1; for(let i=2;i<=n;i++) f*=i; return f; }
+            function assocLaguerre(p, alpha, x){
+                if (p === 0) return 1;
+                if (p === 1) return -x + alpha + 1;
+                let Lkm2 = 1, Lkm1 = -x + alpha + 1;
+                for (let k=2;k<=p;k++){
+                    const a = (2*(k-1) + alpha + 1 - x) * Lkm1;
+                    const b = ((k-1) + alpha) * Lkm2;
+                    const Lk = (a - b) / k;
+                    Lkm2=Lkm1; Lkm1=Lk;
                 }
-
-                // Angular part Y(theta, phi) - Real-valued Spherical Harmonics
-                if (l === 0) { // s-orbital
-                    angular_part = 1;
-                } else if (l === 1) { // p-orbitals
-                    if (m === 0) { // p_z
-                        angular_part = Math.cos(theta);
-                    } else if (m === 1) { // p_x
-                        angular_part = Math.sin(theta) * Math.cos(phi);
-                    } else if (m === -1) { // p_y
-                        angular_part = Math.sin(theta) * Math.sin(phi);
-                    }
-                } else if (l === 2) { // d-orbitals
-                    if (m === 0) { // d_z2
-                        angular_part = (3 * Math.cos(theta) * Math.cos(theta) - 1);
-                    } else if (m === 1) { // d_xz
-                        angular_part = Math.sin(theta) * Math.cos(theta) * Math.cos(phi);
-                    } else if (m === -1) { // d_yz
-                        angular_part = Math.sin(theta) * Math.cos(theta) * Math.sin(phi);
-                    } else if (m === 2) { // d_x2-y2
-                        angular_part = Math.sin(theta) * Math.sin(theta) * Math.cos(2 * phi);
-                    } else if (m === -2) { // d_xy
-                        angular_part = Math.sin(theta) * Math.sin(theta) * Math.sin(2 * phi);
-                    }
-                }
-                
-                return radial_part * angular_part;
+                return Lkm1;
             }
+            function radialR(n,l,r){
+                if (n <= l) return 0;
+                const rho = 2*r/n;
+                const p = n - l - 1;
+                const alpha = 2*l + 1;
+                const N = (2/(n*n)) * Math.sqrt(fact(n-l-1)/fact(n+l));
+                return N * Math.exp(-rho/2) * Math.pow(rho, l) * assocLaguerre(p, alpha, rho);
+            }
+            function realY(l,m,theta,phi){
+                // Normalized real spherical harmonics via associated Legendre
+                const PI = Math.PI; const x = Math.cos(theta); const am = Math.abs(m);
+                function fact(n){ let f=1; for(let i=2;i<=n;i++) f*=i; return f; }
+                function assocLegendre(ll, mm, xx){
+                    if (mm < 0 || ll < 0 || mm > ll) return 0;
+                    let pmm = 1;
+                    if (mm > 0){
+                        const somx2 = Math.sqrt(Math.max(0, 1 - xx*xx));
+                        let odd = 1; for (let i=1;i<=mm;i++) odd *= (2*i-1);
+                        pmm = ((mm%2)? -1: 1) * odd * Math.pow(somx2, mm);
+                    }
+                    if (ll === mm) return pmm;
+                    let pmmp1 = xx * (2*mm + 1) * pmm;
+                    if (ll === mm + 1) return pmmp1;
+                    let pmmPrev = pmm, pmml = pmmp1, pll = 0;
+                    for (let L = mm + 2; L <= ll; L++){
+                        pll = ((2*L - 1)*xx*pmml - (L + mm - 1)*pmmPrev) / (L - mm);
+                        pmmPrev = pmml; pmml = pll;
+                    }
+                    return pmml;
+                }
+                const Plm = assocLegendre(l, am, x);
+                const norm = Math.sqrt((2*l+1)/(4*PI) * fact(l-am)/Math.max(1,fact(l+am)));
+                if (m === 0) return norm * Plm;
+                const base = Math.SQRT2 * norm * Plm;
+                return (m > 0) ? base * Math.cos(am * phi) : base * Math.sin(am * phi);
+            }
+            function getWaveFunctionValue(n, l, m, r, theta, phi) { return radialR(n,l,r) * realY(l,m,theta,phi); }
 
             // Precompute radial LUT (1D) for R_nl(r) to avoid expensive per-sample exp/polynomial
             function createRadialLUT(n, l, size = 1024) {
@@ -365,6 +931,175 @@
                 tex.wrapS = THREE.ClampToEdgeWrapping;
                 tex.wrapT = THREE.ClampToEdgeWrapping;
                 return tex;
+            }
+
+            // Estimate max |Y_lm|^2 for scaling
+            function estimateMaxAngular2(l, m, samples = 2000) {
+                let maxA2 = 0.0;
+                for (let i = 0; i < samples; i++) {
+                    const u = Math.random();
+                    const v = Math.random();
+                    const theta = Math.acos(1 - 2 * u);
+                    const phi = 2 * Math.PI * v;
+                    const a = realY(l, m, theta, phi);
+                    const a2 = a * a;
+                    if (a2 > maxA2) maxA2 = a2;
+                }
+                return Math.max(maxA2, 1e-6);
+            }
+
+            // Build inverse CDF texture for r sampling: p in [0,1] -> r/maxRadius
+            function createRadialInvCDF(n, l, size = 1024) {
+                // Compute PDF over r: |R_{nl}(r)|^2 r^2
+                const radial = new Float32Array(size);
+                for (let i = 0; i < size; i++) {
+                    const t = i / (size - 1);
+                    const r = t * maxRadius;
+                    const R = radialR(n,l,r);
+                    radial[i] = R*R * (r * r);
+                }
+                // Build CDF
+                const cdf = new Float32Array(size);
+                let sum = 0;
+                for (let i = 0; i < size; i++) { sum += radial[i]; cdf[i] = sum; }
+                if (sum <= 1e-30) {
+                    // Degenerate, fallback to uniform radius
+                    for (let i = 0; i < size; i++) cdf[i] = i / (size - 1);
+                } else {
+                    // Normalize to [0,1]
+                    for (let i = 0; i < size; i++) cdf[i] /= sum;
+                }
+                // Build inverse CDF by mapping u in [0,1] to r via linear search on CDF
+                const inv = new Float32Array(size * 4);
+                let j = 0;
+                for (let i = 0; i < size; i++) {
+                    const u = i / (size - 1);
+                    while (j < size - 1 && cdf[j] < u) j++;
+                    const j0 = Math.max(0, j - 1);
+                    const j1 = j;
+                    const c0 = cdf[j0];
+                    const c1 = cdf[j1];
+                    const t = c1 > c0 ? (u - c0) / (c1 - c0) : 0.0;
+                    const r0 = (j0 / (size - 1)) * maxRadius;
+                    const r1 = (j1 / (size - 1)) * maxRadius;
+                    const r = r0 + t * (r1 - r0);
+                    inv[i * 4 + 0] = r / maxRadius; // store normalized radius
+                    inv[i * 4 + 1] = 0;
+                    inv[i * 4 + 2] = 0;
+                    inv[i * 4 + 3] = 1;
+                }
+                const tex = new THREE.DataTexture(inv, size, 1, THREE.RGBAFormat, THREE.FloatType);
+                tex._cpuArray = inv; // attach CPU array for fast sampling
+                tex.needsUpdate = true;
+                tex.minFilter = THREE.LinearFilter;
+                tex.magFilter = THREE.LinearFilter;
+                tex.wrapS = THREE.ClampToEdgeWrapping;
+                tex.wrapT = THREE.ClampToEdgeWrapping;
+                return tex;
+            }
+
+            // Build angular importance sampling tables for given (l,m)
+            function createAngularInvTables(l, m, thetaSize = 256, phiSize = 256) {
+                // PDF grid over theta in [0,pi], phi in [0,2pi]
+
+                const thetaPDF = new Float32Array(thetaSize);
+                const rowPhiCDFs = new Array(thetaSize);
+                const dTheta = Math.PI / (thetaSize - 1);
+                const dPhi = (2 * Math.PI) / (phiSize - 1);
+                // Compute per-row phi PDFs and row sums
+                for (let i = 0; i < thetaSize; i++) {
+                    const theta = i * dTheta;
+                    const st = Math.sin(theta);
+                    const rowPDF = new Float32Array(phiSize);
+                    let rowSum = 0;
+                    for (let j = 0; j < phiSize; j++) {
+                        const phi = j * dPhi;
+                        const a = realY(l, m, theta, phi);
+                        const w = a * a * st; // include measure sin(theta)
+                        rowPDF[j] = w;
+                        rowSum += w;
+                    }
+                    // Build row CDF (normalized)
+                    const rowCDF = new Float32Array(phiSize);
+                    if (rowSum <= 1e-20) {
+                        // Degenerate row: uniform phi
+                        for (let j = 0; j < phiSize; j++) rowCDF[j] = j / (phiSize - 1);
+                    } else {
+                        let acc = 0;
+                        for (let j = 0; j < phiSize; j++) { acc += rowPDF[j]; rowCDF[j] = acc / rowSum; }
+                    }
+                    rowPhiCDFs[i] = rowCDF;
+                    // Row contribution to theta marginal
+                    thetaPDF[i] = rowSum;
+                }
+                // Theta CDF
+                const thetaCDF = new Float32Array(thetaSize);
+                let sumTheta = 0;
+                for (let i = 0; i < thetaSize; i++) { sumTheta += thetaPDF[i]; thetaCDF[i] = sumTheta; }
+                if (sumTheta <= 1e-30) {
+                    for (let i = 0; i < thetaSize; i++) thetaCDF[i] = i / (thetaSize - 1);
+                } else {
+                    for (let i = 0; i < thetaSize; i++) thetaCDF[i] /= sumTheta;
+                }
+
+                // Build inverse CDF for theta (normalized theta/PI)
+                const invThetaArr = new Float32Array(thetaSize * 4);
+                let it = 0;
+                for (let k = 0; k < thetaSize; k++) {
+                    const u = k / (thetaSize - 1);
+                    while (it < thetaSize - 1 && thetaCDF[it] < u) it++;
+                    const i0 = Math.max(0, it - 1);
+                    const i1 = it;
+                    const c0 = thetaCDF[i0];
+                    const c1 = thetaCDF[i1];
+                    const t = c1 > c0 ? (u - c0) / (c1 - c0) : 0;
+                    const th0 = i0 * dTheta;
+                    const th1 = i1 * dTheta;
+                    const th = th0 + t * (th1 - th0);
+                    invThetaArr[k*4 + 0] = th / Math.PI;
+                    invThetaArr[k*4 + 1] = 0;
+                    invThetaArr[k*4 + 2] = 0;
+                    invThetaArr[k*4 + 3] = 1;
+                }
+                const invThetaTex = new THREE.DataTexture(invThetaArr, thetaSize, 1, THREE.RGBAFormat, THREE.FloatType);
+                invThetaTex.needsUpdate = true;
+                invThetaTex.minFilter = THREE.LinearFilter;
+                invThetaTex.magFilter = THREE.LinearFilter;
+                invThetaTex.wrapS = THREE.ClampToEdgeWrapping;
+                invThetaTex.wrapT = THREE.ClampToEdgeWrapping;
+
+                // Build inverse CDF for phi for each theta row
+                const invPhiArr = new Float32Array(thetaSize * phiSize * 4);
+                for (let i = 0; i < thetaSize; i++) {
+                    const rowCDF = rowPhiCDFs[i];
+                    let jp = 0;
+                    for (let j = 0; j < phiSize; j++) {
+                        const v = j / (phiSize - 1);
+                        while (jp < phiSize - 1 && rowCDF[jp] < v) jp++;
+                        const j0 = Math.max(0, jp - 1);
+                        const j1 = jp;
+                        const c0 = rowCDF[j0];
+                        const c1 = rowCDF[j1];
+                        const t = c1 > c0 ? (v - c0) / (c1 - c0) : 0;
+                        const ph0 = j0 * dPhi;
+                        const ph1 = j1 * dPhi;
+                        const ph = ph0 + t * (ph1 - ph0);
+                        const idx = (i * phiSize + j) * 4;
+                        invPhiArr[idx + 0] = ph / (2 * Math.PI);
+                        invPhiArr[idx + 1] = 0;
+                        invPhiArr[idx + 2] = 0;
+                        invPhiArr[idx + 3] = 1;
+                    }
+                }
+                const invPhiTex = new THREE.DataTexture(invPhiArr, phiSize, thetaSize, THREE.RGBAFormat, THREE.FloatType);
+                invPhiTex.needsUpdate = true;
+                invPhiTex.minFilter = THREE.LinearFilter;
+                invPhiTex.magFilter = THREE.LinearFilter;
+                invPhiTex.wrapS = THREE.ClampToEdgeWrapping;
+                invPhiTex.wrapT = THREE.ClampToEdgeWrapping;
+
+                // Return textures and raw arrays for CPU importance sampling
+                return { invThetaTex, invPhiTex, thetaSize, phiSize, invThetaData: invThetaArr, invPhiData: invPhiArr };
             }
 
             // Create or update a GPU render target sized to hold numPoints samples (RGBA32F)
@@ -431,96 +1166,142 @@
             const gpuSampleFragShader = `
 uniform float uN, uL, uM;
 uniform sampler2D uRadialLUT;
+uniform sampler2D uInvRadialCDF;
+uniform sampler2D uInvThetaCDF;
+uniform sampler2D uInvPhiCDF;
 uniform float uLUTSize, uMaxPsi2, uNumPoints;
 uniform vec2 uResolution;
 uniform float uSeed;
+uniform float uMaxRadius; // ensures LUT lookup matches CPU/LUT generation
+uniform float uFrame; // frame counter for decorrelated RNG
+uniform float uMaxAngular2; // max of angular^2 for rejection bound
+uniform float uThetaSize; // rows in phi table / width of theta table
 
-float random(vec2 st) {
-    return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
+// Hash-based RNGs to reduce spatial correlation
+float hash11(float p) {
+    p = fract(p * 0.1031);
+    p *= p + 33.33;
+    p *= p + p;
+    return fract(p);
 }
-
-// Better random function with improved distribution
-float random2(vec2 st, float seed) {
-    return fract(sin(dot(st.xy + seed, vec2(12.9898, 78.233))) * 43758.5453123);
+float hash21(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
 }
+float rng(vec2 s) { return hash21(s); }
 
 vec3 sphericalToCartesian(float r, float theta, float phi) {
     return vec3(r * sin(theta) * cos(phi), r * sin(theta) * sin(phi), r * cos(theta));
 }
 
 float getRadial(float r, float n, float l) {
-    float x = 2.0 * r / n;
-    // Proper scaling based on actual LUT range
-    vec2 texCoord = vec2(clamp(x / 20.0, 0.0, 1.0), 0.0);
-    return texture(uRadialLUT, texCoord).r;
+    // The LUT is generated over r in [0, maxRadius] mapped to [0,1]
+    float t = clamp(r / uMaxRadius, 0.0, 1.0);
+    return texture(uRadialLUT, vec2(t, 0.0)).r;
 }
 
-float getAngular(float theta, float phi, float l, float m) {
-    if (l == 0.0) return 1.0;
-    else if (l == 1.0) {
-        if (m == 0.0) return cos(theta);
-        else if (m == 1.0) return sin(theta) * cos(phi);
-        else return sin(theta) * sin(phi);
-    } else if (l == 2.0) {
-        float ct = cos(theta), st = sin(theta);
-        if (m == 0.0) return 1.5 * ct * ct - 0.5;
-        else if (m == 1.0) return -1.732 * st * ct * cos(phi);
-        else if (m == -1.0) return 1.732 * st * ct * sin(phi);
-        else if (m == 2.0) return 0.866 * st * st * cos(2.0 * phi);
-        else return 0.866 * st * st * sin(2.0 * phi);
+// Inverse-CDF sampling for radius from precomputed LUT (normalized)
+float sampleRadius(float u) {
+    float rNorm = texture(uInvRadialCDF, vec2(u, 0.0)).r;
+    return rNorm * uMaxRadius;
+}
+
+float factorialf(int n){ float f=1.0; for(int i=2;i<=8;i++){ if(i>n) break; f*=float(i);} return f; }
+float assocLegendreP(int l,int m,float x){
+    float pmm=1.0;
+    if (m>0){ float somx2 = sqrt(max(0.0, 1.0 - x*x)); float odd=1.0; for(int i=1;i<=8;i++){ if(i>m) break; odd*=float(2*i-1);} pmm = ((m%2)==0?1.0:-1.0) * odd * pow(somx2, float(m)); }
+    if (l==m) return pmm;
+    float pmmp1 = x * (2.0*float(m)+1.0) * pmm;
+    if (l==m+1) return pmmp1;
+    float pmmPrev = pmm; float pmml = pmmp1; float pll = 0.0;
+    for (int ll=2; ll<=8; ll++){
+        if (ll <= m+1) continue; if (ll > l) break;
+        pll = ((2.0*float(ll)-1.0)*x*pmml - (float(ll)+float(m)-1.0)*pmmPrev) / (float(ll)-float(m));
+        pmmPrev = pmml; pmml = pll;
     }
-    return 0.0;
+    return pmml;
+}
+float getAngular(float t, float p, float l, float m) {
+    const float PI = 3.141592653589793;
+    int li = int(l + 0.5);
+    int mi = int(abs(m) + 0.5);
+    float x = cos(t);
+    float Plm = assocLegendreP(li, mi, x);
+    float norm = sqrt(((2.0*float(li)+1.0)/(4.0*PI)) * (factorialf(li-mi) / max(1.0, factorialf(li+mi))));
+    if (mi==0) return norm * Plm;
+    float base = sqrt(2.0) * norm * Plm;
+    return (m>0.0) ? base * cos(float(mi)*p) : base * sin(float(mi)*p);
 }
 
 void main() {
-    vec2 uv = gl_FragCoord.xy / uResolution;
-    float idx = uv.x + uv.y * uResolution.x;
+    // Compute integer pixel coordinates and linear index for optional bounds check
+    float ix = floor(gl_FragCoord.x);
+    float iy = floor(gl_FragCoord.y);
+    float idx = ix + iy * uResolution.x;
     if (idx >= uNumPoints) discard;
 
-    vec2 baseSeed = uv + vec2(uSeed);
+    // Derive a decorrelated per-pixel seed using Cranley-Patterson rotation by frame
+    const vec2 R2 = vec2(0.754877666, 0.569840296);
+    vec2 jitter = R2 * (uFrame + uSeed * 101.0);
+    vec2 baseSeed = (vec2(ix, iy) + 0.5 + jitter) / uResolution;
     float psi = 0.0;
     vec3 pos = vec3(0.0);
     bool found = false;
 
     // Rejection sampling loop with fallback
-    for (int attempt = 0; attempt < 100; attempt++) {
-        float attemptSeed = float(attempt);
-        float r = random2(baseSeed, attemptSeed) * 30.0;
-        float theta = acos(2.0 * random2(baseSeed, attemptSeed + 1.0) - 1.0);
-        float phi = random2(baseSeed, attemptSeed + 2.0) * 6.283185;
+    // Importance sample radius (inverse-CDF) and angles (theta,phi) using precomputed inverse tables
+    vec2 s = baseSeed + R2 * 17.0;
+    float u1 = rng(s + 0.11);
+    float u2 = rng(s + 0.37);
+    float u3 = rng(s + 0.59);
+    float r = sampleRadius(u1);
+    float thetaNorm = texture(uInvThetaCDF, vec2(u2, 0.5)).r; // [0,1]
+    float theta = thetaNorm * 3.141592653589793;
+    float thetaIndex = clamp(thetaNorm * (uThetaSize - 1.0), 0.0, uThetaSize - 1.0);
+    float row0 = floor(thetaIndex);
+    float row1 = min(uThetaSize - 1.0, row0 + 1.0);
+    float frow = thetaIndex - row0;
+    float v0 = (row0 + 0.5) / uThetaSize;
+    float v1 = (row1 + 0.5) / uThetaSize;
+    float phi0 = texture(uInvPhiCDF, vec2(u3, v0)).r;
+    float phi1 = texture(uInvPhiCDF, vec2(u3, v1)).r;
+    float phiNorm = mix(phi0, phi1, frow);
+    float phi = phiNorm * 6.283185307179586;
 
-        float radial = getRadial(r, uN, uL);
-        float angular = getAngular(theta, phi, uL, uM);
-        psi = radial * angular;
-        float psi2 = psi * psi;
-
-        if (random2(baseSeed, attemptSeed + 3.0) < psi2 / uMaxPsi2) {
-            pos = sphericalToCartesian(r, theta, phi);
-            found = true;
-            break;
-        }
-    }
+    float radial = getRadial(r, uN, uL);
+    float angular = getAngular(theta, phi, uL, uM);
+    psi = radial * angular;
+    pos = sphericalToCartesian(r, theta, phi);
 
     // Fallback: uniform sampling if rejection fails
-    if (!found) {
-        float r = random2(baseSeed, 100.0) * 30.0;
-        float theta = acos(2.0 * random2(baseSeed, 101.0) - 1.0);
-        float phi = random2(baseSeed, 102.0) * 6.283185;
-        pos = sphericalToCartesian(r, theta, phi);
-        psi = getRadial(r, uN, uL) * getAngular(theta, phi, uL, uM);
-    }
+    // No fallback needed with fully importance-sampled angles and radius
 
     gl_FragColor = vec4(pos, psi);
 }
 `;
 
             // Update renderGPUSamples to log shader compilation errors
+            let gpuFrame = 0;
             function renderGPUSamples(n, l, m, numPoints) {
-                // Ensure LUT exists for current n,l (cache per n,l)
+                // Ensure LUT and invCDF exist for current n,l (cache per n,l)
                 const lutKey = `${n}_${l}`;
-                if (!radialLUTCache[lutKey]) radialLUTCache[lutKey] = createRadialLUT(n, l, 1024);
-                gpuRadialLUT = radialLUTCache[lutKey];
+                if (!radialCache[lutKey]) {
+                    const radTex = createRadialLUT(n, l, 1024);
+                    radialCache[lutKey] = {
+                        radial: radTex,
+                        invCdf: createRadialInvCDF(n, l, 1024),
+                        maxR: radTex._maxRabs || 1
+                    };
+                }
+                gpuRadialLUT = radialCache[lutKey].radial;
                 gpuLUTSize = 1024;
+
+                // Ensure angular tables exist for current l,m
+                const angKey = `${l}_${m}`;
+                if (!angularCache[angKey]) {
+                    angularCache[angKey] = createAngularInvTables(l, m, 256, 256);
+                }
 
                 const rt = createGPUSampleTarget(numPoints);
                 if (!rt) {
@@ -549,12 +1330,19 @@ void main() {
                         uN: { value: n },
                         uL: { value: l },
                         uM: { value: m },
-                        uRadialLUT: { value: radialLUTCache[`${n}_${l}`] },
+                        uRadialLUT: { value: radialCache[`${n}_${l}`].radial },
+                        uInvRadialCDF: { value: radialCache[`${n}_${l}`].invCdf },
+                        uInvThetaCDF: { value: angularCache[`${l}_${m}`].invThetaTex },
+                        uInvPhiCDF: { value: angularCache[`${l}_${m}`].invPhiTex },
                         uLUTSize: { value: gpuLUTSize }, // Use consistent LUT size
-                        uMaxPsi2: { value: estimateMaxPsi2(n, l, m) }, // precompute max |psi|^2
+                        uMaxPsi2: { value: estimateMaxPsi2(n, l, m) },
+                        uMaxAngular2: { value: estimateMaxAngular2(l, m) },
                         uNumPoints: { value: numPoints },
                         uResolution: { value: new THREE.Vector2(gpuSampleTarget.width, gpuSampleTarget.height) },
-                        uSeed: { value: Math.random() }
+                        uSeed: { value: Math.random() },
+                        uMaxRadius: { value: maxRadius },
+                        uFrame: { value: gpuFrame },
+                        uThetaSize: { value: angularCache[`${l}_${m}`].thetaSize }
                     },
                     vertexShader: `
                         varying vec2 vUv;
@@ -576,6 +1364,7 @@ void main() {
                 const orthoCamera = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
                 renderer.render(gpuQuadScene, orthoCamera);
                 renderer.setRenderTarget(prevRenderTarget);
+                gpuFrame++;
 
                 // Check for compilation errors after rendering (when shaders are actually compiled)
                 if (quadMat.program) {
@@ -610,21 +1399,50 @@ void main() {
                 geom.setAttribute('aIndex', new THREE.BufferAttribute(indices, 1));
 
                 const width = sampleTarget._texWidth, height = sampleTarget._texHeight;
+                // Estimate amplitude scales
+                const n = currentOrbitalData.n, l = currentOrbitalData.l, m = currentOrbitalData.m;
+                const rk = `${n}_${l}`;
+                const radMax = (radialCache[rk] && radialCache[rk].maxR) ? radialCache[rk].maxR : 1;
+                const angMax = Math.sqrt(estimateMaxAngular2(l, m));
+                const ampMax = Math.max(1e-6, radMax * angMax);
+                const alphaScale = 0.9 / ampMax;
+                const sizeScale = alphaScale;
                 const mat = new THREE.ShaderMaterial({
                     uniforms: {
                         uSamples: { value: sampleTarget.texture },
                         uTexSize: { value: new THREE.Vector2(width, height) },
-                        uPointSize: { value: 0.3 },
-                        uColorPos: { value: colorPositive },
-                        uColorNeg: { value: colorNegative }
+                        // Match Points mode exactly
+                        uPointSize: { value: 0.08 },
+                        uColorPos: { value: new THREE.Vector3(colorPositive.r, colorPositive.g, colorPositive.b) },
+                        uColorNeg: { value: new THREE.Vector3(colorNegative.r, colorNegative.g, colorNegative.b) },
+                        uPixelRatio: { value: renderer.getPixelRatio() },
+                        uViewportHeight: { value: renderer.getSize(new THREE.Vector2()).y },
+                        uFov: { value: camera.fov },
+                        uDitherStrength: { value: 0.12 },
+                        uAlphaBase: { value: 0.7 },
+                        uAlphaScale: { value: alphaScale },
+                        uSizeScale: { value: sizeScale }
                     },
                     vertexShader: `
                         attribute float aIndex;
                         uniform sampler2D uSamples;
                         uniform vec2 uTexSize;
                         uniform float uPointSize;
+                        uniform vec3 uColorPos;
+                        uniform vec3 uColorNeg;
+                        uniform float uPixelRatio;
+                        uniform float uViewportHeight;
+                        uniform float uFov;
+                        uniform float uDitherStrength;
+                        uniform float uSizeScale;
                         varying float vPsi;
                         varying vec3 vColor;
+                        varying float vDither;
+                        varying float vAmp;
+
+                        float hash1(float n) {
+                            return fract(sin(n) * 43758.5453123);
+                        }
                         void main() {
                             float id = aIndex;
                             float w = uTexSize.x;
@@ -636,9 +1454,16 @@ void main() {
                             vec3 pos = s.xyz;
                             float psi = s.w;
                             vPsi = psi;
-                            if (psi >= 0.0) vColor = vec3(0.18, 0.39, 0.88); else vColor = vec3(1.0, 0.4, 0.4);
+                            vAmp = abs(psi);
+                            vColor = (psi >= 0.0) ? uColorPos : uColorNeg;
                             vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-                            gl_PointSize = uPointSize * (1.0 + clamp(abs(psi) * 8.0, 0.0, 6.0));
+                            // Match Three.js PointsMaterial size attenuation
+                            float fov = radians(uFov);
+                            float scale = uPixelRatio * (0.5 * uViewportHeight) / tan(0.5 * fov);
+                            float jitter = 1.0 + uDitherStrength * (hash1(id * 17.0 + 0.123) * 2.0 - 1.0);
+                            vDither = jitter;
+                            float sizeAmp = mix(0.6, 1.3, clamp(vAmp * uSizeScale, 0.0, 1.0));
+                            gl_PointSize = uPointSize * (scale / -mvPosition.z) * jitter * sizeAmp;
                             gl_Position = projectionMatrix * mvPosition;
                         }
                     `,
@@ -646,9 +1471,13 @@ void main() {
                         precision highp float;
                         varying float vPsi;
                         varying vec3 vColor;
+                        varying float vDither;
+                        uniform float uAlphaBase;
+                        uniform float uAlphaScale;
                         void main() {
-                            float a = clamp(abs(vPsi) * 2.0, 0.0, 1.0);
-                            gl_FragColor = vec4(vColor * a, a);
+                            float d = clamp(vDither * 0.15 + 0.85, 0.0, 1.0);
+                            float alpha = uAlphaBase * d * clamp(abs(vPsi) * uAlphaScale, 0.0, 1.0);
+                            gl_FragColor = vec4(vColor, alpha);
                         }
                     `,
                     transparent: true,
@@ -667,6 +1496,17 @@ void main() {
             function regenerateOrbitalGeometry() {
                 const { n, l, m } = currentOrbitalData;
                 const numPoints = parseInt(densitySlider.value);
+
+                // WebGPU mode does not use Three.js objects; just (re)build particle buffer
+                if (renderMode === 'webgpu') {
+                    if (!webgpu.initialized) {
+                        /* try to init silently */
+                        initWebGPU().then(ok=>{ if(ok){ ensureWebGPUParticles(); updateModeButtonText(); } });
+                    } else {
+                        ensureWebGPUParticles();
+                    }
+                    return; // skip rest
+                }
 
                 // Remove any previous orbital objects from the scene (safe cleanup)
                 scene.children.slice().forEach(child => {
@@ -696,7 +1536,10 @@ void main() {
                         console.warn('Floating point render targets not supported; falling back to points mode');
                         renderMode = 'points';
                     } else {
-                        console.info('GPU sampling enabled (float render targets available)');
+                        if (!gpuSupportLogged) {
+                            console.info('GPU sampling enabled (float render targets available)');
+                            gpuSupportLogged = true;
+                        }
                     }
                 }
 
@@ -720,9 +1563,6 @@ void main() {
                         attribute float instanceScale;
                         varying vec3 vColor;
                         uniform vec3 color;
-                        uniform mat4 modelViewMatrix;
-                        uniform mat4 projectionMatrix;
-                        uniform vec3 cameraPosition;
                         
                         void main() {
                             vec3 pos = instancePosition;
@@ -789,15 +1629,56 @@ void main() {
                         const geom = new THREE.BufferGeometry();
                         const posArr = new Float32Array(numPoints * 3);
                         const colArr = new Float32Array(numPoints * 3);
+                        const psiArr = new Float32Array(numPoints);
                         geom.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-                        geom.setAttribute('color', new THREE.BufferAttribute(colArr, 3));
+                        geom.setAttribute('aColor', new THREE.BufferAttribute(colArr, 3));
+                        geom.setAttribute('aPsi', new THREE.BufferAttribute(psiArr, 1));
                         pointsCache.geometry = geom;
-                        pointsCache.material = new THREE.PointsMaterial({ size: 0.08, vertexColors: true, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: !occlusionEnabled, depthTest: occlusionEnabled });
+                        // Build amplitude-weighted shader material similar to GPU points
+                        const rk = `${n}_${l}`;
+                        if (!radialCache[rk]) {
+                            const radTex = createRadialLUT(n, l, 1024);
+                            radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n,l,1024), maxR: radTex._maxRabs || 1 };
+                        }
+                        const radMax = radialCache[rk].maxR || 1;
+                        const angMax = Math.sqrt(estimateMaxAngular2(l, m));
+                        const ampMax = Math.max(1e-6, radMax * angMax);
+                        const alphaScale = 0.9 / ampMax;
+                        const sizeScale = alphaScale;
+                        pointsCache.material = new THREE.ShaderMaterial({
+                            uniforms: {
+                                uPointSize: { value: 0.08 },
+                                uPixelRatio: { value: renderer.getPixelRatio() },
+                                uViewportHeight: { value: renderer.getSize(new THREE.Vector2()).y },
+                                uFov: { value: camera.fov },
+                                uDitherStrength: { value: 0.12 },
+                                uAlphaBase: { value: 0.7 },
+                                uAlphaScale: { value: alphaScale },
+                                uSizeScale: { value: sizeScale }
+                            },
+                            vertexShader: `
+                                attribute vec3 aColor; attribute float aPsi;
+                                uniform float uPointSize, uPixelRatio, uViewportHeight, uFov, uDitherStrength, uSizeScale;
+                                varying vec3 vColor; varying float vPsi; varying float vDither; 
+                                float hash1(float n){ return fract(sin(n) * 43758.5453123); }
+                                void main(){ vPsi = aPsi; vColor = aColor; vec4 mv = modelViewMatrix * vec4(position,1.0);
+                                  float fov = radians(uFov); float scale = uPixelRatio * (0.5 * uViewportHeight) / tan(0.5 * fov);
+                                  float jitter = 1.0 + uDitherStrength * (hash1(float(gl_VertexID) * 17.0 + 0.123) * 2.0 - 1.0); vDither = jitter;
+                                  float sizeAmp = mix(0.6, 1.3, clamp(abs(aPsi) * uSizeScale, 0.0, 1.0));
+                                  gl_PointSize = uPointSize * (scale / -mv.z) * jitter * sizeAmp; gl_Position = projectionMatrix * mv; }
+                            `,
+                            fragmentShader: `
+                                precision highp float; varying float vPsi; varying vec3 vColor; varying float vDither; uniform float uAlphaBase; uniform float uAlphaScale; 
+                                void main(){ float d = clamp(vDither * 0.15 + 0.85, 0.0, 1.0); float alpha = uAlphaBase * d * clamp(abs(vPsi) * uAlphaScale, 0.0, 1.0); gl_FragColor=vec4(vColor, alpha); }
+                            `,
+                            transparent: true, depthWrite: !occlusionEnabled, depthTest: occlusionEnabled, blending: THREE.AdditiveBlending
+                        });
                         pointsCache.capacity = numPoints;
                     }
                     const geom = pointsCache.geometry;
                     const posArr = geom.getAttribute('position').array;
-                    const colArr = geom.getAttribute('color').array;
+                    const colArr = geom.getAttribute('aColor').array;
+                    const psiArr = geom.getAttribute('aPsi').array;
                     // Fill via rejection sampling using estimateMaxPsi2
                     const maxPsi2 = estimateMaxPsi2(n, l, m, Math.min(1200, Math.max(200, numPoints)));
                     let written = 0, attempts = 0, MAX_ATTEMPTS = numPoints * 20;
@@ -819,11 +1700,13 @@ void main() {
                             posArr[i] = x; posArr[i+1] = y; posArr[i+2] = z;
                             const c = psi >= 0 ? colorPositive : colorNegative;
                             colArr[i] = c.r; colArr[i+1] = c.g; colArr[i+2] = c.b;
+                            psiArr[written] = psi;
                             written++;
                         }
                     }
                     geom.getAttribute('position').needsUpdate = true;
-                    geom.getAttribute('color').needsUpdate = true;
+                    geom.getAttribute('aColor').needsUpdate = true;
+                    geom.getAttribute('aPsi').needsUpdate = true;
                     const points = new THREE.Points(geom, pointsCache.material);
                     points.userData = points.userData || {};
                     points.userData.isOrbital = true;
@@ -894,8 +1777,10 @@ void main() {
                 const useMatPos = useImpostor ? matPosBillboard : matPos;
                 const useMatNeg = useImpostor ? matNegBillboard : matNeg;
 
-                const posMesh = new THREE.InstancedMesh(useGeo, useMatPos, posTransforms.length || 1);
-                const negMesh = new THREE.InstancedMesh(useGeo, useMatNeg, negTransforms.length || 1);
+                const posCount = Math.max(1, posTransforms.length);
+                const negCount = Math.max(1, negTransforms.length);
+                const posMesh = new THREE.InstancedMesh(useGeo, useMatPos, posCount);
+                const negMesh = new THREE.InstancedMesh(useGeo, useMatNeg, negCount);
                 // mark meshes so global cleanup will remove them when changing modes
                 posMesh.userData = posMesh.userData || {};
                 negMesh.userData = negMesh.userData || {};
@@ -904,41 +1789,68 @@ void main() {
 
                 // For impostors, add instance attributes for position and scale
                 if (useImpostor) {
-                    const posPositions = new Float32Array(posTransforms.length * 3);
-                    const posScales = new Float32Array(posTransforms.length);
-                    posTransforms.forEach((t, i) => {
+                    // Positive impostors
+                    const posPositions = new Float32Array(posCount * 3);
+                    const posScales = new Float32Array(posCount);
+                    for (let i = 0; i < posTransforms.length; i++) {
+                        const t = posTransforms[i];
                         posPositions[i*3] = t.x;
                         posPositions[i*3+1] = t.y;
                         posPositions[i*3+2] = t.z;
                         posScales[i] = t.scale;
-                    });
+                    }
+                    // If empty, keep one dummy instance scaled to 0
+                    if (posTransforms.length === 0) {
+                        posPositions[0] = 0.0; posPositions[1] = 0.0; posPositions[2] = 0.0;
+                        posScales[0] = 0.0;
+                    }
                     posMesh.geometry.setAttribute('instancePosition', new THREE.InstancedBufferAttribute(posPositions, 3));
                     posMesh.geometry.setAttribute('instanceScale', new THREE.InstancedBufferAttribute(posScales, 1));
-                    
-                    const negPositions = new Float32Array(negTransforms.length * 3);
-                    const negScales = new Float32Array(negTransforms.length);
-                    negTransforms.forEach((t, i) => {
+
+                    // Negative impostors
+                    const negPositions = new Float32Array(negCount * 3);
+                    const negScales = new Float32Array(negCount);
+                    for (let i = 0; i < negTransforms.length; i++) {
+                        const t = negTransforms[i];
                         negPositions[i*3] = t.x;
                         negPositions[i*3+1] = t.y;
                         negPositions[i*3+2] = t.z;
                         negScales[i] = t.scale;
-                    });
+                    }
+                    if (negTransforms.length === 0) {
+                        negPositions[0] = 0.0; negPositions[1] = 0.0; negPositions[2] = 0.0;
+                        negScales[0] = 0.0;
+                    }
                     negMesh.geometry.setAttribute('instancePosition', new THREE.InstancedBufferAttribute(negPositions, 3));
                     negMesh.geometry.setAttribute('instanceScale', new THREE.InstancedBufferAttribute(negScales, 1));
                 } else {
                     // For spheres, use the standard instance matrix approach
-                    posTransforms.forEach((t, i) => {
-                        dummyObject3D.position.set(t.x, t.y, t.z);
-                        dummyObject3D.scale.setScalar(t.scale);
+                    if (posTransforms.length === 0) {
+                        dummyObject3D.position.set(0,0,0);
+                        dummyObject3D.scale.setScalar(0);
                         dummyObject3D.updateMatrix();
-                        posMesh.setMatrixAt(i, dummyObject3D.matrix);
-                    });
-                    negTransforms.forEach((t, i) => {
-                        dummyObject3D.position.set(t.x, t.y, t.z);
-                        dummyObject3D.scale.setScalar(t.scale);
+                        posMesh.setMatrixAt(0, dummyObject3D.matrix);
+                    } else {
+                        posTransforms.forEach((t, i) => {
+                            dummyObject3D.position.set(t.x, t.y, t.z);
+                            dummyObject3D.scale.setScalar(t.scale);
+                            dummyObject3D.updateMatrix();
+                            posMesh.setMatrixAt(i, dummyObject3D.matrix);
+                        });
+                    }
+                    if (negTransforms.length === 0) {
+                        dummyObject3D.position.set(0,0,0);
+                        dummyObject3D.scale.setScalar(0);
                         dummyObject3D.updateMatrix();
-                        negMesh.setMatrixAt(i, dummyObject3D.matrix);
-                    });
+                        negMesh.setMatrixAt(0, dummyObject3D.matrix);
+                    } else {
+                        negTransforms.forEach((t, i) => {
+                            dummyObject3D.position.set(t.x, t.y, t.z);
+                            dummyObject3D.scale.setScalar(t.scale);
+                            dummyObject3D.updateMatrix();
+                            negMesh.setMatrixAt(i, dummyObject3D.matrix);
+                        });
+                    }
                 }
                 posMesh.instanceMatrix.needsUpdate = true;
                 negMesh.instanceMatrix.needsUpdate = true;
@@ -964,6 +1876,8 @@ void main() {
 
             // In-place resampling without reallocating meshes (called each frame when not paused)
             function resampleOrbitalInPlace() {
+                // WebGPU now performs sampling in a compute pass; nothing to do here
+                if (renderMode === 'webgpu') { return; }
                 // GPU mode: re-render samples into the target and update points texture
                 if (renderMode === 'gpu') {
                     const { n: gpuN, l: gpuL, m: gpuM } = currentOrbitalData;
@@ -1017,7 +1931,7 @@ void main() {
                     
                     const geom = currentOrbital.geometry;
                     const posArr = geom.getAttribute('position').array;
-                    const colArr = geom.getAttribute('color').array;
+                    const colArr = geom.getAttribute('aColor').array;
                     const numPoints = posArr.length / 3;
                     
                     if (!adaptiveEnabled) {
@@ -1094,7 +2008,7 @@ void main() {
                     }
                     
                     geom.getAttribute('position').needsUpdate = true;
-                    geom.getAttribute('color').needsUpdate = true;
+                    geom.getAttribute('aColor').needsUpdate = true;
                     return;
                 }
 
@@ -1220,10 +2134,19 @@ void main() {
             const cullButton = document.getElementById('cull-toggle');
             const clearButton = document.getElementById('clear-button');
             const screenshotButton = document.getElementById('screenshot-button'); // new
+            // Orientation buttons
+            const snapXBtn = document.getElementById('snap-x');
+            const snapYBtn = document.getElementById('snap-y');
+            const snapZBtn = document.getElementById('snap-z');
+            const resetOrientBtn = document.getElementById('reset-orient');
 
             // Function to update mode button text (can be called when mode changes due to fallback)
             function updateModeButtonText() {
-                modeButton.textContent = renderMode === 'instanced' ? 'Mode: Instanced' : (renderMode === 'points' ? 'Mode: Points' : 'Mode: GPU');
+                let label = 'Mode: Instanced';
+                if (renderMode === 'points') label = 'Mode: Points';
+                else if (renderMode === 'gpu') label = 'Mode: GPU (WebGL)';
+                else if (renderMode === 'webgpu') label = webgpuSupported ? 'Mode: WebGPU' : 'Mode: WebGPU (No Support)';
+                modeButton.textContent = label;
             }
 
             // Initialize button states
@@ -1284,22 +2207,42 @@ void main() {
                 cachedMaxPsi2 = null;
                 scheduleRegeneration(10);
             });
-            modeButton.addEventListener('click', () => {
-                // Cycle through instanced -> points -> gpu
+            modeButton.addEventListener('click', async () => {
+                // Cycle instanced -> points -> gpu -> webgpu -> instanced
                 if (renderMode === 'instanced') renderMode = 'points';
                 else if (renderMode === 'points') renderMode = 'gpu';
+                else if (renderMode === 'gpu') renderMode = 'webgpu';
                 else renderMode = 'instanced';
+                // Initialize WebGPU lazily
+                if (renderMode === 'webgpu' && !webgpu.initialized) {
+                    const ok = await initWebGPU();
+                    if (!ok) {
+                        console.warn('Falling back: WebGPU unavailable');
+                        renderMode = 'instanced';
+                    }
+                }
+                // Hide/show canvases
+                if (webgpu.canvas) {
+                    const on = (renderMode === 'webgpu');
+                    webgpu.canvas.style.display = on ? 'block' : 'none';
+                    webgpu.canvas.style.pointerEvents = on ? 'auto' : 'none';
+                }
+                // Keep WebGL canvas in DOM to capture controls when not in WebGPU
+                const onWebGPU = (renderMode === 'webgpu');
+                renderer.domElement.style.opacity = onWebGPU ? '0' : '1';
+                renderer.domElement.style.pointerEvents = onWebGPU ? 'none' : 'auto';
                 updateModeButtonText();
-                
-                // Update impostor button availability
+                // Update impostor availability
                 if (renderMode === 'instanced') {
                     impostorButton.disabled = false;
                     impostorButton.textContent = impostorEnabled ? 'Impostor: On' : 'Impostor: Off';
+                } else if (renderMode === 'webgpu') { // no impostors
+                    impostorButton.disabled = true;
+                    impostorButton.textContent = 'Impostor: N/A';
                 } else {
                     impostorButton.disabled = true;
                     impostorButton.textContent = 'Impostor: N/A';
                 }
-                
                 scheduleRegeneration(30);
             });
 
@@ -1320,6 +2263,33 @@ void main() {
             });
 
             // Clear button
+            function clearOrbital() {
+                // remove orbital-marked children
+                scene.children.slice().forEach(child => {
+                    if (child.userData && child.userData.isOrbital) {
+                        if (child.type === 'Group') {
+                            child.children.forEach(ch => { ch.geometry?.dispose?.(); ch.material?.dispose?.(); });
+                        } else {
+                            child.geometry?.dispose?.();
+                            child.material?.dispose?.();
+                        }
+                        scene.remove(child);
+                    }
+                });
+                // dispose GPU resources
+                if (gpuSampleMesh) {
+                    gpuSampleMesh.geometry?.dispose?.();
+                    gpuSampleMesh.material?.dispose?.();
+                    scene.remove(gpuSampleMesh);
+                    gpuSampleMesh = null;
+                }
+                if (gpuSampleTarget) {
+                    gpuSampleTarget.dispose?.();
+                    gpuSampleTarget = null;
+                }
+                // clear cached current orbital reference
+                currentOrbital = null;
+            }
             clearButton.addEventListener('click', () => {
                 clearOrbital();
             });
@@ -1355,6 +2325,68 @@ void main() {
             }
             // Set initial state
             document.querySelector('[data-orbital="1s"]').classList.add('active');
+
+            // Orientation snaps
+            const initialCamPos = new THREE.Vector3().copy(camera.position);
+            const initialTarget = new THREE.Vector3(0,0,0);
+            // Smooth camera tweening for OrbitControls
+            let camTween = null; let isTransitioning = false;
+            function easeInOutCubic(t){ return t<0.5? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
+            function startCameraTransition(toPos, toTarget, toUp, duration=650){
+                camTween = {
+                    t0: performance.now(), dur: duration,
+                    fromPos: camera.position.clone(), toPos: toPos.clone(),
+                    fromTarget: controls.target.clone(), toTarget: toTarget.clone(),
+                    fromUp: camera.up.clone(), toUp: toUp.clone(),
+                };
+                isTransitioning = true; controls.enabled = false;
+            }
+            // Smooth transition for WebGPU (yaw/pitch/distance)
+            let webgpuTween = null;
+            function shortestAngle(from, to){ let d = to - from; while (d > Math.PI) d -= 2*Math.PI; while (d < -Math.PI) d += 2*Math.PI; return from + d; }
+            function startWebGPUTransition(toYaw, toPitch, toDistance, duration=650){
+                if (!webgpu) return;
+                const from = webgpu.camera;
+                const yawDst = shortestAngle(from.yaw, toYaw);
+                webgpuTween = { t0: performance.now(), dur: duration, fromYaw: from.yaw, toYaw: yawDst, fromPitch: from.pitch, toPitch, fromDist: from.distance, toDist: toDistance };
+            }
+            function computeSnap(axis){
+                const target = controls.target.clone();
+                const dist = camera.position.clone().sub(target).length() || 20;
+                let up = new THREE.Vector3(0,1,0);
+                let pos = new THREE.Vector3();
+                if (axis === 'x') { pos.set(dist, 0, 0); up.set(0,1,0); }
+                else if (axis === 'y') { pos.set(0, dist, 0); up.set(0,0,1); }
+                else { pos.set(0, 0, dist); up.set(0,1,0); }
+                return { pos: target.clone().add(pos), target, up, dist };
+            }
+            function snapTo(axis){
+                const cfg = computeSnap(axis);
+                if (renderMode === 'webgpu'){
+                    // Map axes to yaw/pitch for WebGPU camera model
+                    const YAW_X = Math.PI * 0.5, YAW_Z = 0.0; // +Z is yaw=0
+                    const PITCH_FLAT = 0.0, PITCH_Y = Math.PI * 0.5;
+                    let yaw = YAW_Z, pitch = PITCH_FLAT;
+                    if (axis==='x'){ yaw = YAW_X; pitch = PITCH_FLAT; }
+                    else if (axis==='y'){ yaw = YAW_Z; pitch = PITCH_Y; }
+                    else { yaw = YAW_Z; pitch = PITCH_FLAT; }
+                    startWebGPUTransition(yaw, pitch, cfg.dist);
+                    // Also align the Three camera for overlay consistency
+                    startCameraTransition(cfg.pos, cfg.target, cfg.up, 650);
+                } else {
+                    startCameraTransition(cfg.pos, cfg.target, cfg.up, 650);
+                }
+            }
+            function resetOrientation(){
+                if (renderMode === 'webgpu'){
+                    startWebGPUTransition(0.0, 0.0, webgpu.camera.distance, 650);
+                }
+                startCameraTransition(initialCamPos, initialTarget, new THREE.Vector3(0,1,0), 650);
+            }
+            snapXBtn.addEventListener('click', ()=> snapTo('x'));
+            snapYBtn.addEventListener('click', ()=> snapTo('y'));
+            snapZBtn.addEventListener('click', ()=> snapTo('z'));
+            resetOrientBtn.addEventListener('click', resetOrientation);
             
             // Handle window resizing (debounced)
             let resizeTimer = null;
@@ -1366,6 +2398,19 @@ void main() {
                     camera.aspect = width / height;
                     camera.updateProjectionMatrix();
                     renderer.setSize(width, height);
+                    // keep GPU points size attenuation in sync
+                    if (gpuSampleMesh && gpuSampleMesh.material && gpuSampleMesh.material.uniforms) {
+                        const size = renderer.getSize(new THREE.Vector2());
+                        gpuSampleMesh.material.uniforms.uViewportHeight.value = size.y;
+                        gpuSampleMesh.material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+                        gpuSampleMesh.material.uniforms.uFov.value = camera.fov;
+                    }
+                    if (pointsCache.material && pointsCache.material.uniforms) {
+                        const size = renderer.getSize(new THREE.Vector2());
+                        pointsCache.material.uniforms.uViewportHeight.value = size.y;
+                        pointsCache.material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+                        pointsCache.material.uniforms.uFov.value = camera.fov;
+                    }
                 }, 120);
             });
 
@@ -1376,17 +2421,47 @@ void main() {
                 if (!paused) {
                     resampleOrbitalInPlace();
                 }
-                controls.update();
-                
-                // Update billboard material camera positions for proper billboarding
-                if (regenerateOrbitalGeometry._matPosBillboard) {
-                    regenerateOrbitalGeometry._matPosBillboard.uniforms.cameraPosition.value.copy(camera.position);
+                // Handle camera tween (OrbitControls camera) BEFORE render
+                if (isTransitioning && camTween) {
+                    const now = performance.now();
+                    const t = Math.min(1, (now - camTween.t0) / camTween.dur);
+                    const s = easeInOutCubic(t);
+                    const pos = camTween.fromPos.clone().lerp(camTween.toPos, s);
+                    const tgt = camTween.fromTarget.clone().lerp(camTween.toTarget, s);
+                    const up = camTween.fromUp.clone().lerp(camTween.toUp, s).normalize();
+                    camera.up.copy(up);
+                    camera.position.copy(pos);
+                    controls.target.copy(tgt);
+                    camera.lookAt(controls.target);
+                    if (t >= 1) { isTransitioning = false; camTween = null; controls.enabled = true; }
                 }
-                if (regenerateOrbitalGeometry._matNegBillboard) {
-                    regenerateOrbitalGeometry._matNegBillboard.uniforms.cameraPosition.value.copy(camera.position);
+                // Handle WebGPU camera tween BEFORE render
+                if (webgpuTween && webgpu && webgpu.camera) {
+                    const now = performance.now();
+                    const t = Math.min(1, (now - webgpuTween.t0) / webgpuTween.dur);
+                    const s = easeInOutCubic(t);
+                    webgpu.camera.yaw = webgpuTween.fromYaw + (webgpuTween.toYaw - webgpuTween.fromYaw) * s;
+                    webgpu.camera.pitch = webgpuTween.fromPitch + (webgpuTween.toPitch - webgpuTween.fromPitch) * s;
+                    webgpu.camera.distance = webgpuTween.fromDist + (webgpuTween.toDist - webgpuTween.fromDist) * s;
+                    if (t >= 1) { webgpuTween = null; }
                 }
-                
-                renderer.render(scene, camera);
+
+                if (renderMode !== 'webgpu') {
+                    controls.update();
+                    // Update billboard materials
+                    if (regenerateOrbitalGeometry._matPosBillboard) {
+                        regenerateOrbitalGeometry._matPosBillboard.uniforms.cameraPosition.value.copy(camera.position);
+                    }
+                    if (regenerateOrbitalGeometry._matNegBillboard) {
+                        regenerateOrbitalGeometry._matNegBillboard.uniforms.cameraPosition.value.copy(camera.position);
+                    }
+                    renderer.render(scene, camera);
+                } else {
+                    renderWebGPUFrame();
+                }
+                // Render orientation overlay (copy camera orientation)
+                axesRoot.quaternion.copy(camera.quaternion);
+                orientRenderer.render(orientScene, orientCam);
                 const currentTime = performance.now();
                 frames++;
                 if (currentTime - prevTime >= 1000) {
@@ -1398,37 +2473,17 @@ void main() {
 
             // Initial generation
             regenerateOrbitalGeometry();
+            // Ensure WebGPU canvas hidden if created later and mode not webgpu
+            if (webgpu.canvas && renderMode !== 'webgpu') {
+                webgpu.canvas.style.display = 'none';
+                webgpu.canvas.style.pointerEvents = 'none';
+            }
             animate();
         };
 
-        // Remove and dispose any current orbital objects and GPU targets
-        function clearOrbital() {
-            // remove orbital-marked children
-            scene.children.slice().forEach(child => {
-                if (child.userData && child.userData.isOrbital) {
-                    if (child.type === 'Group') {
-                        child.children.forEach(ch => { ch.geometry?.dispose?.(); ch.material?.dispose?.(); });
-                    } else {
-                        child.geometry?.dispose?.();
-                        child.material?.dispose?.();
-                    }
-                    scene.remove(child);
-                }
-            });
-            // dispose GPU resources
-            if (gpuSampleMesh) {
-                gpuSampleMesh.geometry?.dispose?.();
-                gpuSampleMesh.material?.dispose?.();
-                scene.remove(gpuSampleMesh);
-                gpuSampleMesh = null;
-            }
-            if (gpuSampleTarget) {
-                gpuSampleTarget.dispose?.();
-                gpuSampleTarget = null;
-            }
-            // clear cached current orbital reference
-            currentOrbital = null;
-        }
+        // (clearOrbital now lives inside onload where scene/renderer exist)
     </script>
-</body>
+    <!-- Removed duplicate module script to prevent double initialization of scene/controls -->
+    <!-- <script type="module" src="./src/main.js"></script> -->
+  </body>
 </html>
