@@ -313,7 +313,7 @@
             const ACCEPTANCE_SCALE = 130; // Acceptance probability scale factor
             const dummyObject3D = new THREE.Object3D(); // For instanced transforms
 
-            // --- Experimental WebGPU mode (independent of Three.js) ---
+            // --- WebGPU mode (independent of Three.js) ---
             let webgpuSupported = !!navigator.gpu;
             let webgpu = {
                 initialized: false,
@@ -337,7 +337,7 @@
                 uniforms: { projection: new Float32Array(16), view: new Float32Array(16), pointSize: 0.08 },
                 _uniformStaging: new Float32Array(16 + 16 + 4),
                 _computeStaging: new ArrayBuffer(64), // for Params struct
-                camera: { distance: 40, yaw: 0.8, pitch: 0.6, dragging: false, lastX:0, lastY:0 }
+                camera: { distance: 80, yaw: 0.8, pitch: 0.6, dragging: false, lastX:0, lastY:0 }
             };
 
             function mat4Perspective(out, fovy, aspect, near, far) {
