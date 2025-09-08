@@ -74,18 +74,96 @@ window.addEventListener('load', async () => {
       geom.setAttribute('position', new T.BufferAttribute(posArr,3)); geom.setAttribute('color', new T.BufferAttribute(colArr,3));
       const mat = new T.PointsMaterial({ size:0.08, vertexColors:true, transparent:true, opacity:0.7, blending:T.AdditiveBlending, depthWrite:!occlusionEnabled, depthTest:occlusionEnabled });
       const points = new T.Points(geom, mat); points.userData={ isOrbital:true }; scene.add(points); currentOrbital = points;
-      // Fill
-      const maxPsi2 = estimateMaxPsi2(n,l,m, Math.min(1500, Math.max(200,numPoints)));
-      let written=0, attempts=0, MAX_ATTEMPTS=numPoints*20;
-      while (written<numPoints && attempts<MAX_ATTEMPTS){ attempts++; const r=Math.random()*maxRadius; const theta=Math.acos(2*Math.random()-1); const phi=Math.random()*Math.PI*2; const st=Math.sin(theta); const x=r*st*Math.cos(phi); const y=r*st*Math.sin(phi); const z=r*Math.cos(theta); const psi=getWaveFunctionValue(n,l,m,r,theta,phi); if (Math.random() <= (psi*psi)/maxPsi2){ const i=written*3; posArr[i]=x; posArr[i+1]=y; posArr[i+2]=z; const c= psi>=0?colorPositive:colorNegative; colArr[i]=c.r; colArr[i+1]=c.g; colArr[i+2]=c.b; written++; } }
+      // Fill using importance sampling (more efficient and accurate than rejection sampling)
+      const { invCdf: radialInvCdf } = LUT.getRadial(n, l);
+      const { invThetaData, invPhiData, thetaSize, phiSize } = LUT.getAngular(l, m);
+      const radialArray = radialInvCdf._cpuArray;
+      const radialSize = radialInvCdf.image.width;
+      
+      for (let i = 0; i < numPoints; i++) {
+        // Importance sampling using inverse CDFs
+        const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
+        
+        // Sample radius from radial inverse CDF
+        const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
+        const rNorm = radialArray[rIdx * 4]; // normalized r in [0,1]
+        const r = rNorm * maxRadius;
+        
+        // Sample theta from angular inverse CDF
+        const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
+        const thetaNorm = invThetaData[thetaIdx * 4]; // normalized theta in [0,1]
+        const theta = thetaNorm * Math.PI;
+        
+        // Sample phi from conditional phi inverse CDF (given theta)
+        const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
+        const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
+        const phiNorm = invPhiData[phiDataIdx]; // normalized phi in [0,1]
+        const phi = phiNorm * 2 * Math.PI;
+        
+        // Convert to Cartesian coordinates
+        const sinTheta = Math.sin(theta);
+        const cosTheta = Math.cos(theta);
+        const cosPhi = Math.cos(phi);
+        const sinPhi = Math.sin(phi);
+        const x = r * sinTheta * cosPhi;
+        const y = r * sinTheta * sinPhi;
+        const z = r * cosTheta;
+        
+        // Get wave function value for color
+        const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
+        const c = psi >= 0 ? colorPositive : colorNegative;
+        
+        // Store position and color
+        const idx = i * 3;
+        posArr[idx] = x; posArr[idx+1] = y; posArr[idx+2] = z;
+        colArr[idx] = c.r; colArr[idx+1] = c.g; colArr[idx+2] = c.b;
+      }
       geom.getAttribute('position').needsUpdate=true; geom.getAttribute('color').needsUpdate=true; return;
     }
     if (renderMode === 'instanced') {
       const sphereGeo = new T.SphereGeometry(0.12, 6, 6);
       const matPos = new T.MeshBasicMaterial({ color: colorPositive, transparent:true, opacity:0.5, blending:T.AdditiveBlending, depthWrite:!occlusionEnabled, depthTest:occlusionEnabled });
       const matNeg = new T.MeshBasicMaterial({ color: colorNegative, transparent:true, opacity:0.5, blending:T.AdditiveBlending, depthWrite:!occlusionEnabled, depthTest:occlusionEnabled });
-      const transformsPos=[]; const transformsNeg=[]; const maxPsi2=estimateMaxPsi2(n,l,m,1500); let attempts=0; const MAX_ATTEMPTS=numPoints*10;
-      while ((transformsPos.length+transformsNeg.length)<numPoints && attempts<MAX_ATTEMPTS){ attempts++; const r=Math.random()*maxRadius; const theta=Math.acos(2*Math.random()-1); const phi=Math.random()*Math.PI*2; const st=Math.sin(theta); const x=r*st*Math.cos(phi); const y=r*st*Math.sin(phi); const z=r*Math.cos(theta); const psi=getWaveFunctionValue(n,l,m,r,theta,phi); const psi2=psi*psi; if (Math.random()<=psi2/maxPsi2){ const t={x,y,z, scale: 0.55+0.45*Math.min(1, Math.sqrt(psi2/maxPsi2))}; if (psi>=0) transformsPos.push(t); else transformsNeg.push(t); } }
+      const transformsPos=[]; const transformsNeg=[];
+      
+      // Use importance sampling instead of rejection sampling for instanced mode
+      const { invCdf: radialInvCdf } = LUT.getRadial(n, l);
+      const { invThetaData, invPhiData, thetaSize, phiSize } = LUT.getAngular(l, m);
+      const radialArray = radialInvCdf._cpuArray;
+      const radialSize = radialInvCdf.image.width;
+      
+      for (let i = 0; i < numPoints; i++) {
+        const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
+        
+        const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
+        const rNorm = radialArray[rIdx * 4];
+        const r = rNorm * maxRadius;
+        
+        const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
+        const thetaNorm = invThetaData[thetaIdx * 4];
+        const theta = thetaNorm * Math.PI;
+        
+        const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
+        const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
+        const phiNorm = invPhiData[phiDataIdx];
+        const phi = phiNorm * 2 * Math.PI;
+        
+        const sinTheta = Math.sin(theta);
+        const x = r * sinTheta * Math.cos(phi);
+        const y = r * sinTheta * Math.sin(phi);
+        const z = r * Math.cos(theta);
+        
+        const psi = getWaveFunctionValue(n,l,m,r,theta,phi);
+        const psi2 = psi * psi;
+        
+        // Scale based on amplitude for visual variety (scientific accuracy maintained through sampling)
+        const scale = 0.55 + 0.45 * Math.min(1, Math.sqrt(psi2 / 1e-6)); // normalized scale
+        const t = {x, y, z, scale};
+        
+        if (psi >= 0) transformsPos.push(t);
+        else transformsNeg.push(t);
+      }
+      
       const posMesh = new T.InstancedMesh(sphereGeo, matPos, Math.max(1, transformsPos.length));
       const negMesh = new T.InstancedMesh(sphereGeo, matNeg, Math.max(1, transformsNeg.length));
       const dummy = new T.Object3D(); transformsPos.forEach((t,i)=>{ dummy.position.set(t.x,t.y,t.z); dummy.scale.setScalar(t.scale); dummy.updateMatrix(); posMesh.setMatrixAt(i, dummy.matrix); });
@@ -106,14 +184,74 @@ window.addEventListener('load', async () => {
     if (renderMode === 'points') {
       if (!currentOrbital || currentOrbital.type !== 'Points') return; const { n,l,m } = currentOrbitalData; const numPoints = currentOrbital.geometry.getAttribute('position').array.length/3;
       if (!adaptiveEnabled) {
-        const posArr = currentOrbital.geometry.getAttribute('position').array; const colArr = currentOrbital.geometry.getAttribute('color').array; const maxPsi2 = estimateMaxPsi2(n,l,m, Math.min(1500, Math.max(200,numPoints)));
-        let written=0, attempts=0, MAX_ATTEMPTS=numPoints*20; while (written<numPoints && attempts<MAX_ATTEMPTS){ attempts++; const r=Math.random()*maxRadius; const theta=Math.acos(2*Math.random()-1); const phi=Math.random()*Math.PI*2; const st=Math.sin(theta); const x=r*st*Math.cos(phi); const y=r*st*Math.sin(phi); const z=r*Math.cos(theta); const psi=getWaveFunctionValue(n,l,m,r,theta,phi); const psi2=psi*psi; if (Math.random()<=psi2/maxPsi2){ const i=written*3; posArr[i]=x; posArr[i+1]=y; posArr[i+2]=z; const c= psi>=0?colorPositive:colorNegative; colArr[i]=c.r; colArr[i+1]=c.g; colArr[i+2]=c.b; written++; } }
+        // Full refresh using importance sampling
+        const posArr = currentOrbital.geometry.getAttribute('position').array; const colArr = currentOrbital.geometry.getAttribute('color').array;
+        const { invCdf: radialInvCdf } = LUT.getRadial(n, l);
+        const { invThetaData, invPhiData, thetaSize, phiSize } = LUT.getAngular(l, m);
+        const radialArray = radialInvCdf._cpuArray;
+        const radialSize = radialInvCdf.image.width;
+        
+        for (let i = 0; i < numPoints; i++) {
+          const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
+          
+          // Sample using importance sampling
+          const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
+          const rNorm = radialArray[rIdx * 4];
+          const r = rNorm * maxRadius;
+          
+          const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
+          const thetaNorm = invThetaData[thetaIdx * 4];
+          const theta = thetaNorm * Math.PI;
+          
+          const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
+          const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
+          const phiNorm = invPhiData[phiDataIdx];
+          const phi = phiNorm * 2 * Math.PI;
+          
+          const sinTheta = Math.sin(theta), cosTheta = Math.cos(theta);
+          const x = r * sinTheta * Math.cos(phi); const y = r * sinTheta * Math.sin(phi); const z = r * cosTheta;
+          const psi = getWaveFunctionValue(n,l,m,r,theta,phi);
+          const c = psi >= 0 ? colorPositive : colorNegative;
+          
+          const idx = i * 3;
+          posArr[idx] = x; posArr[idx+1] = y; posArr[idx+2] = z;
+          colArr[idx] = c.r; colArr[idx+1] = c.g; colArr[idx+2] = c.b;
+        }
         currentOrbital.geometry.getAttribute('position').needsUpdate=true; currentOrbital.geometry.getAttribute('color').needsUpdate=true;
       } else {
-        // Adaptive: subset update
-        const posArr = currentOrbital.geometry.getAttribute('position').array; const colArr = currentOrbital.geometry.getAttribute('color').array; const updates=Math.max(1, Math.floor(numPoints*sampling.SUBSET_RESAMPLE_FRACTION));
-        const maxPsi2 = estimateMaxPsi2(n,l,m,600);
-        for (let i=0;i<updates;i++){ const idx=(Math.random()*numPoints)|0; for (let a=0;a<40;a++){ const r=Math.random()*maxRadius; const theta=Math.acos(2*Math.random()-1); const phi=Math.random()*Math.PI*2; const st=Math.sin(theta); const x=r*st*Math.cos(phi); const y=r*st*Math.sin(phi); const z=r*Math.cos(theta); const psi=getWaveFunctionValue(n,l,m,r,theta,phi); if (Math.random()<= (psi*psi)/maxPsi2){ const p=idx*3; posArr[p]=x; posArr[p+1]=y; posArr[p+2]=z; const c= psi>=0?colorPositive:colorNegative; colArr[p]=c.r; colArr[p+1]=c.g; colArr[p+2]=c.b; break; } } }
+        // Adaptive: subset update using importance sampling
+        const posArr = currentOrbital.geometry.getAttribute('position').array; const colArr = currentOrbital.geometry.getAttribute('color').array; 
+        const updates=Math.max(1, Math.floor(numPoints*sampling.SUBSET_RESAMPLE_FRACTION));
+        const { invCdf: radialInvCdf } = LUT.getRadial(n, l);
+        const { invThetaData, invPhiData, thetaSize, phiSize } = LUT.getAngular(l, m);
+        const radialArray = radialInvCdf._cpuArray;
+        const radialSize = radialInvCdf.image.width;
+        
+        for (let i=0; i<updates; i++){
+          const idx = (Math.random()*numPoints)|0;
+          const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
+          
+          const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
+          const rNorm = radialArray[rIdx * 4];
+          const r = rNorm * maxRadius;
+          
+          const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
+          const thetaNorm = invThetaData[thetaIdx * 4];
+          const theta = thetaNorm * Math.PI;
+          
+          const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
+          const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
+          const phiNorm = invPhiData[phiDataIdx];
+          const phi = phiNorm * 2 * Math.PI;
+          
+          const sinTheta = Math.sin(theta); const x = r * sinTheta * Math.cos(phi); const y = r * sinTheta * Math.sin(phi); const z = r * Math.cos(theta);
+          const psi = getWaveFunctionValue(n,l,m,r,theta,phi);
+          const c = psi >= 0 ? colorPositive : colorNegative;
+          
+          const p = idx * 3;
+          posArr[p]=x; posArr[p+1]=y; posArr[p+2]=z;
+          colArr[p]=c.r; colArr[p+1]=c.g; colArr[p+2]=c.b;
+        }
         currentOrbital.geometry.getAttribute('position').needsUpdate=true; currentOrbital.geometry.getAttribute('color').needsUpdate=true; adaptiveFrame++;
       }
       return;

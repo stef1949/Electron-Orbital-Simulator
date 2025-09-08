@@ -1950,75 +1950,124 @@ void main() {
                     const numPoints = posArr.length / 3;
                     
                     if (!adaptiveEnabled) {
-                        // Full refresh for points mode
-                        const maxPsi2 = estimateMaxPsi2(pointsN, pointsL, pointsM, Math.min(1200, Math.max(200, numPoints)));
-                        let written = 0, attempts = 0, MAX_ATTEMPTS = numPoints * 20;
-                        while (written < numPoints && attempts < MAX_ATTEMPTS) {
-                            attempts++;
-                            const r = Math.random() * maxRadius;
-                            const theta = Math.acos(2 * Math.random() - 1);
-                            const phi = Math.random() * 2 * Math.PI;
+                        // Full refresh for points mode using importance sampling
+                        const rk = `${pointsN}_${pointsL}`;
+                        const ak = `${pointsL}_${pointsM}`;
+                        
+                        // Ensure LUT caches exist
+                        if (!radialCache[rk]) {
+                            radialCache[rk] = { 
+                                radial: createRadialLUT(pointsN, pointsL, 1024), 
+                                invCdf: createRadialInvCDF(pointsN, pointsL, 1024) 
+                            };
+                        }
+                        if (!angularCache[ak]) {
+                            angularCache[ak] = createAngularInvTables(pointsL, pointsM, 256, 256);
+                        }
+                        
+                        const radialInvCdf = radialCache[rk].invCdf;
+                        const { invThetaData, invPhiData, thetaSize, phiSize } = angularCache[ak];
+                        const radialArray = radialInvCdf._cpuArray;
+                        const radialSize = radialInvCdf.image.width;
+                        
+                        // Use importance sampling - every sample is guaranteed to be accepted
+                        for (let i = 0; i < numPoints; i++) {
+                            const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
+                            
+                            // Sample radius from radial inverse CDF
+                            const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
+                            const rNorm = radialArray[rIdx * 4]; // normalized r in [0,1]
+                            const r = rNorm * maxRadius;
+                            
+                            // Sample theta from angular inverse CDF
+                            const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
+                            const thetaNorm = invThetaData[thetaIdx * 4]; // normalized theta in [0,1]
+                            const theta = thetaNorm * Math.PI;
+                            
+                            // Sample phi from conditional phi inverse CDF (given theta)
+                            const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
+                            const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
+                            const phiNorm = invPhiData[phiDataIdx]; // normalized phi in [0,1]
+                            const phi = phiNorm * 2 * Math.PI;
+                            
+                            // Convert to Cartesian coordinates
                             const sinTheta = Math.sin(theta);
                             const cosTheta = Math.cos(theta);
                             const cosPhi = Math.cos(phi);
+                            const sinPhi = Math.sin(phi);
                             const x = r * sinTheta * cosPhi;
-                            const y = r * sinTheta * Math.sin(phi);
+                            const y = r * sinTheta * sinPhi;
                             const z = r * cosTheta;
+                            
+                            // Get wave function value for color
                             const psi = getWaveFunctionValue(pointsN, pointsL, pointsM, r, theta, phi);
-                            const psi2 = psi * psi;
-                            if (Math.random() <= psi2 / maxPsi2) {
-                                const i = written * 3;
-                                posArr[i] = x; posArr[i+1] = y; posArr[i+2] = z;
-                                const c = psi >= 0 ? colorPositive : colorNegative;
-                                colArr[i] = c.r; colArr[i+1] = c.g; colArr[i+2] = c.b;
-                                written++;
-                            }
-                        }
-                        // Fill remaining with zeros (invisible points)
-                        for (let i = written; i < numPoints; i++) {
+                            const c = psi >= 0 ? colorPositive : colorNegative;
+                            
+                            // Store position and color
                             const idx = i * 3;
-                            posArr[idx] = 0; posArr[idx+1] = 0; posArr[idx+2] = 0;
-                            colArr[idx] = 0; colArr[idx+1] = 0; colArr[idx+2] = 0;
+                            posArr[idx] = x; posArr[idx+1] = y; posArr[idx+2] = z;
+                            colArr[idx] = c.r; colArr[idx+1] = c.g; colArr[idx+2] = c.b;
                         }
                     } else {
-                        // Adaptive mode for points: update random subset
-                        if (!cachedMaxPsi2 || adaptiveFrame % ADAPTIVE_MAX_RECALC_INTERVAL === 0) {
-                            const fresh = estimateMaxPsi2(pointsN, pointsL, pointsM, 600);
-                            if (emaMaxPsi2 == null) emaMaxPsi2 = fresh; else emaMaxPsi2 = EMA_ALPHA * fresh + (1 - EMA_ALPHA) * emaMaxPsi2;
-                            cachedMaxPsi2 = emaMaxPsi2;
+                        // Adaptive mode for points: update random subset using importance sampling
+                        const rk = `${pointsN}_${pointsL}`;
+                        const ak = `${pointsL}_${pointsM}`;
+                        
+                        // Ensure LUT caches exist
+                        if (!radialCache[rk]) {
+                            radialCache[rk] = { 
+                                radial: createRadialLUT(pointsN, pointsL, 1024), 
+                                invCdf: createRadialInvCDF(pointsN, pointsL, 1024) 
+                            };
                         }
-                        const maxPsi2 = cachedMaxPsi2 || 1e-6;
+                        if (!angularCache[ak]) {
+                            angularCache[ak] = createAngularInvTables(pointsL, pointsM, 256, 256);
+                        }
+                        
+                        const radialInvCdf = radialCache[rk].invCdf;
+                        const { invThetaData, invPhiData, thetaSize, phiSize } = angularCache[ak];
+                        const radialArray = radialInvCdf._cpuArray;
+                        const radialSize = radialInvCdf.image.width;
+                        
                         const updates = Math.max(1, Math.floor(numPoints * SUBSET_RESAMPLE_FRACTION));
                         
-                        let attempts = 0, accepted = 0;
+                        // Use importance sampling for adaptive updates - always guaranteed success
                         for (let i = 0; i < updates; i++) {
                             const idx = (Math.random() * numPoints) | 0;
-                            const ATTEMPT_LIMIT = 40;
-                            for (let a = 0; a < ATTEMPT_LIMIT; a++) {
-                                attempts++;
-                                const r = Math.random() * maxRadius;
-                                const theta = Math.acos(2 * Math.random() - 1);
-                                const phi = Math.random() * 2 * Math.PI;
-                                const sinTheta = Math.sin(theta);
-                                const cosTheta = Math.cos(theta);
-                                const cosPhi = Math.cos(phi);
-                                const sinPhi = Math.sin(phi);
-                                const x = r * sinTheta * cosPhi;
-                                const y = r * sinTheta * sinPhi;
-                                const z = r * cosTheta;
-                                const psi = getWaveFunctionValue(pointsN, pointsL, pointsM, r, theta, phi);
-                                const psi2 = psi * psi;
-                                if (Math.random() <= psi2 / maxPsi2) {
-                                    const posIdx = idx * 3;
-                                    posArr[posIdx] = x; posArr[posIdx+1] = y; posArr[posIdx+2] = z;
-                                    const c = psi >= 0 ? colorPositive : colorNegative;
-                                    colArr[posIdx] = c.r; colArr[posIdx+1] = c.g; colArr[posIdx+2] = c.b;
-                                    accepted++;
-                                    break;
-                                }
-                            }
+                            const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
+                            
+                            // Sample using importance sampling
+                            const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
+                            const rNorm = radialArray[rIdx * 4];
+                            const r = rNorm * maxRadius;
+                            
+                            const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
+                            const thetaNorm = invThetaData[thetaIdx * 4];
+                            const theta = thetaNorm * Math.PI;
+                            
+                            const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
+                            const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
+                            const phiNorm = invPhiData[phiDataIdx];
+                            const phi = phiNorm * 2 * Math.PI;
+                            
+                            const sinTheta = Math.sin(theta);
+                            const cosTheta = Math.cos(theta);
+                            const cosPhi = Math.cos(phi);
+                            const sinPhi = Math.sin(phi);
+                            const x = r * sinTheta * cosPhi;
+                            const y = r * sinTheta * sinPhi;
+                            const z = r * cosTheta;
+                            
+                            const psi = getWaveFunctionValue(pointsN, pointsL, pointsM, r, theta, phi);
+                            const c = psi >= 0 ? colorPositive : colorNegative;
+                            
+                            const posIdx = idx * 3;
+                            posArr[posIdx] = x; posArr[posIdx+1] = y; posArr[posIdx+2] = z;
+                            colArr[posIdx] = c.r; colArr[posIdx+1] = c.g; colArr[posIdx+2] = c.b;
                         }
-                        currentOrbital._prevAcceptRatio = accepted > 0 ? (accepted / attempts) : currentOrbital._prevAcceptRatio;
+                        
+                        // Since we're using importance sampling, acceptance rate is always 100%
+                        currentOrbital._prevAcceptRatio = 1.0;
                         adaptiveFrame++;
                     }
                     
