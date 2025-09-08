@@ -50,7 +50,7 @@ struct VSOut { @builtin(position) position: vec4<f32>, @location(0) color: vec3<
 @vertex fn vs(@builtin(instance_index) inst:u32, @builtin(vertex_index) vid:u32) -> VSOut {
   var out: VSOut; let p = particles[inst].pos; let quad = array<vec2<f32>,4>(vec2<f32>(-1.0,-1.0), vec2<f32>(1.0,-1.0), vec2<f32>(-1.0,1.0), vec2<f32>(1.0,1.0));
   let wpos = uniforms.view * vec4<f32>(p.xyz,1.0); var clip = uniforms.projection * wpos; let offs = quad[vid] * uniforms.pointSize.x * (10.0 / max(0.1, -wpos.z));
-  let xy = clip.xy + offs; clip = vec4<f32>(xy, clip.zw)webgpu.uniforms.pointSize = 0.120;; out.position = clip; let cpos = vec3<f32>(0.18,0.39,0.88); let cneg = vec3<f32>(1.0,0.4,0.4);
+  let xy = clip.xy + offs; clip = vec4<f32>(xy, clip.zw); out.position = clip; let cpos = vec3<f32>(0.18,0.39,0.88); let cneg = vec3<f32>(1.0,0.4,0.4);
   out.color = select(cneg, cpos, p.w >= 0.0); out.alpha = 0.65; return out; }
 @fragment fn fs(@location(0) color: vec3<f32>, @location(1) alpha: f32) -> @location(0) vec4<f32> { return vec4<f32>(color, alpha); }
 `;
@@ -71,7 +71,36 @@ fn rand01(n: ptr<function,u32>)->f32{ (*n)=xs32(lcg(*n)); return f32((*n)&167772
 fn sample1D_R(size:u32,u:f32)->f32{ let x=clamp(u,0.0,1.0)*f32(max(1u,size)-1u); let i0=u32(floor(x)); let i1=min(i0+1u,max(1u,size)-1u); let t=x-f32(i0); let a=invR[i0*4u]; let b=invR[i1*4u]; return mix(a,b,t);} 
 fn sample1D_T(size:u32,u:f32)->f32{ let x=clamp(u,0.0,1.0)*f32(max(1u,size)-1u); let i0=u32(floor(x)); let i1=min(i0+1u,max(1u,size)-1u); let t=x-f32(i0); let a=invTheta[i0*4u]; let b=invTheta[i1*4u]; return mix(a,b,t);} 
 fn samplePhi(row:u32,u:f32)->f32{ let size=params.phiSize; let base=row*size*4u; let x=clamp(u,0.0,1.0)*f32(max(1u,size)-1u); let j0=u32(floor(x)); let j1=min(j0+1u,max(1u,size)-1u); let t=x-f32(j0); let a=invPhi[base+j0*4u]; let b=invPhi[base+j1*4u]; return mix(a,b,t);} 
-fn getAngular(th:f32,ph:f32,l:f32,m:f32)->f32{ if(l==0.0){return 1.0;} if(l==1.0){ if(m==0.0)return cos(th); if(m==1.0)return sin(th)*cos(ph); return sin(th)*sin(ph);} if(l==2.0){ let ct=cos(th); let st=sin(th); if(m==0.0)return 1.5*ct*ct-0.5; if(m==1.0)return -1.732*st*ct*cos(ph); if(m==-1.0)return 1.732*st*ct*sin(ph); if(m==2.0)return 0.866*st*st*cos(2.0*ph); return 0.866*st*st*sin(2.0*ph);} return 0.0; }
+fn getAngular(th:f32,ph:f32,l:f32,m:f32)->f32{ 
+  // Since we're using importance sampling from pre-computed LUTs, 
+  // the spatial distribution is already correct. This function is mainly
+  // used for determining the sign of psi for color coding.
+  // For scientific accuracy, the actual magnitude should come from the 
+  // wave function evaluation, but for visual purposes this approximation suffices.
+  
+  if(l==0.0){return 1.0;} 
+  if(l==1.0){ 
+    if(m==0.0)return cos(th); 
+    if(m==1.0)return sin(th)*cos(ph); 
+    return sin(th)*sin(ph);
+  } 
+  if(l==2.0){ 
+    let ct=cos(th); let st=sin(th); 
+    if(m==0.0)return 1.5*ct*ct-0.5; 
+    if(m==1.0)return -1.732*st*ct*cos(ph); 
+    if(m==-1.0)return 1.732*st*ct*sin(ph); 
+    if(m==2.0)return 0.866*st*st*cos(2.0*ph); 
+    return 0.866*st*st*sin(2.0*ph);
+  } 
+  // For higher l values, use simplified approximations for sign determination
+  if(l>=3.0){
+    let ct=cos(th); let st=sin(th);
+    if(m==0.0) return ct; // Simple approximation
+    // For non-zero m, use trigonometric approximation based on m and phi
+    return st * select(sin(abs(m)*ph), cos(abs(m)*ph), m>=0.0);
+  }
+  return 1.0;
+}
 @compute @workgroup_size(256) fn cs(@builtin(global_invocation_id) gid:vec3<u32>){ let id=gid.x; if(id>=params.numPoints){return;} var state=rngStates[id]; if(state==0u){ state=lcg(id ^ params.seed ^ params.frame);} let u1=rand01(&state); let u2=rand01(&state); let u3=rand01(&state); let rNorm=sample1D_R(params.radialSize,u1); let r=rNorm*params.maxRadius; let tNorm=sample1D_T(params.thetaSize,u2); let th=tNorm*3.14159265; let rf=clamp(tNorm*f32(params.thetaSize-1u),0.0,f32(params.thetaSize-1u)); let r0=u32(floor(rf)); let r1=min(params.thetaSize-1u,r0+1u); let fr=rf-f32(r0); let p0=samplePhi(r0,u3); let p1=samplePhi(r1,u3); let ph=mix(p0,p1,fr)*6.2831853; let st=sin(th); let ct=cos(th); let x=r*st*cos(ph); let y=r*st*sin(ph); let z=r*ct; let psi=getAngular(th,ph,params.l,params.m); particles[id].pos=vec4<f32>(x,y,z,psi); rngStates[id]=state; }
 `;
   webgpu.computePipeline = webgpu.device.createComputePipeline({ layout:'auto', compute:{ module:webgpu.device.createShaderModule({code:computeWGSL}), entryPoint:'cs' } });
