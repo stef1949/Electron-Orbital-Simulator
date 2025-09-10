@@ -1,0 +1,42 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="2p electron orbital icon">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="40%" r="75%">
+      <stop offset="0%" stop-color="#0B1022"/>
+      <stop offset="60%" stop-color="#0A0E18"/>
+      <stop offset="100%" stop-color="#080B12"/>
+    </radialGradient>
+    <linearGradient id="lobePos" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#67E8F9"/>
+      <stop offset="100%" stop-color="#7C83FF"/>
+    </linearGradient>
+    <linearGradient id="lobeNeg" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FF6AD5"/>
+      <stop offset="100%" stop-color="#FFD166"/>
+    </linearGradient>
+    <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+  </defs>
+
+  <!-- Rounded-square badge -->
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="url(#bg)"/>
+
+  <!-- s-like diffuse density behind (subtle probability halo) -->
+  <circle cx="256" cy="256" r="150" fill="#7dd3fc" opacity="0.10" filter="url(#soft)"/>
+
+  <!-- 2p_y orbital: symmetric lobes about the vertical axis, nodal plane horizontal -->
+  <g transform="translate(256,256)">
+    <!-- Positive phase lobe (top) -->
+    <path d="M0,-150 C65,-150 108,-95 108,0 C108,95 65,150 0,150 C-65,150 -108,95 -108,0 C-108,-95 -65,-150 0,-150 Z"
+          fill="url(#lobePos)" opacity="0.9" transform="scale(0.85,0.9) translate(0,-78)"/>
+    <!-- Negative phase lobe (bottom) -->
+    <path d="M0,-150 C65,-150 108,-95 108,0 C108,95 65,150 0,150 C-65,150 -108,95 -108,0 C-108,-95 -65,-150 0,-150 Z"
+          fill="url(#lobeNeg)" opacity="0.9" transform="scale(0.85,0.9) translate(0,78)"/>
+  </g>
+
+  <!-- Nodal plane (2p has a node through the nucleus) -->
+  <line x1="96" x2="416" y1="256" y2="256" stroke="white" stroke-opacity="0.18" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- Nucleus hint -->
+  <circle cx="256" cy="256" r="14" fill="#E9FCFF"/>
+</svg>
