@@ -914,6 +914,7 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
             // Precompute radial LUT (1D) for R_nl(r) to avoid expensive per-sample exp/polynomial
             function createRadialLUT(n, l, size = 1024) {
                 const arr = new Float32Array(size * 4); // RGBA but we only fill R channel
+                let maxRabs = 0;
                 for (let i = 0; i < size; i++) {
                     const t = i / (size - 1);
                     const r = t * maxRadius;
@@ -935,10 +936,25 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
                         } else if (p === 3) {
                             L = (1 / 6) * (-x * x * x + 3 * (alpha + 3) * x * x - 3 * (alpha + 2) * (alpha + 3) * x + (alpha + 1) * (alpha + 2) * (alpha + 3));
                         } else {
-                            L = 1;
+                            // For higher p, fall back to recurrence through assocLaguerre for stability
+                            // This case is rare for current UI presets but keeps correctness
+                            L = (function(){
+                                // small inline stable recurrence
+                                if (p === 0) return 1;
+                                if (p === 1) return -x + alpha + 1;
+                                let Lkm2 = 1, Lkm1 = -x + alpha + 1;
+                                for (let k = 2; k <= p; k++){
+                                    const a = (2*(k-1) + alpha + 1 - x) * Lkm1;
+                                    const b = ((k-1) + alpha) * Lkm2;
+                                    const Lk = (a - b) / k;
+                                    Lkm2 = Lkm1; Lkm1 = Lk;
+                                }
+                                return Lkm1;
+                            })();
                         }
                         radial_part = Math.pow(x, l) * L * Math.exp(-x / 2);
                     }
+                    maxRabs = Math.max(maxRabs, Math.abs(radial_part));
                     arr[i * 4 + 0] = radial_part;
                     arr[i * 4 + 1] = 0;
                     arr[i * 4 + 2] = 0;
@@ -950,6 +966,8 @@ fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
                 tex.magFilter = THREE.LinearFilter;
                 tex.wrapS = THREE.ClampToEdgeWrapping;
                 tex.wrapT = THREE.ClampToEdgeWrapping;
+                // record maximum |R_{nl}(r)| over sampled domain for amplitude scaling
+                tex._maxRabs = maxRabs;
                 return tex;
             }
 
@@ -1653,9 +1671,12 @@ void main() {
                         const posArr = new Float32Array(numPoints * 3);
                         const colArr = new Float32Array(numPoints * 3);
                         const psiArr = new Float32Array(numPoints);
+                        const idxArr = new Float32Array(numPoints);
+                        for (let i = 0; i < numPoints; i++) idxArr[i] = i;
                         geom.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
                         geom.setAttribute('aColor', new THREE.BufferAttribute(colArr, 3));
                         geom.setAttribute('aPsi', new THREE.BufferAttribute(psiArr, 1));
+                        geom.setAttribute('aIndex', new THREE.BufferAttribute(idxArr, 1));
                         pointsCache.geometry = geom;
                         // Build amplitude-weighted shader material similar to GPU points
                         const rk = `${n}_${l}`;
@@ -1677,18 +1698,20 @@ void main() {
                                 uDitherStrength: { value: 0.12 },
                                 uAlphaBase: { value: 0.7 },
                                 uAlphaScale: { value: alphaScale },
-                                uSizeScale: { value: sizeScale }
+                                uSizeScale: { value: sizeScale },
+                                uBrightnessGamma: { value: 0.7 },
                             },
                             vertexShader: `
-                                attribute vec3 aColor; attribute float aPsi;
+                                attribute vec3 aColor; attribute float aPsi; attribute float aIndex;
                                 uniform float uPointSize, uPixelRatio, uViewportHeight, uFov, uDitherStrength, uSizeScale;
-                                varying vec3 vColor; varying float vPsi; varying float vDither; 
+                                varying vec3 vColor; varying float vPsi; varying float vDither; varying float vZoom;
                                 float hash1(float n){ return fract(sin(n) * 43758.5453123); }
                                 void main(){ vPsi = aPsi; vColor = aColor; vec4 mv = modelViewMatrix * vec4(position,1.0);
                                   float fov = radians(uFov); float scale = uPixelRatio * (0.5 * uViewportHeight) / tan(0.5 * fov);
-                                  float jitter = 1.0 + uDitherStrength * (hash1(float(gl_VertexID) * 17.0 + 0.123) * 2.0 - 1.0); vDither = jitter;
+                                  vZoom = scale / max(0.1, -mv.z);
+                                  float jitter = 1.0 + uDitherStrength * (hash1(aIndex * 17.0 + 0.123) * 2.0 - 1.0); vDither = jitter;
                                   float sizeAmp = mix(0.6, 1.3, clamp(abs(aPsi) * uSizeScale, 0.0, 1.0));
-                                  gl_PointSize = uPointSize * (scale / -mv.z) * jitter * sizeAmp; gl_Position = projectionMatrix * mv; }
+                                  gl_PointSize = uPointSize * vZoom * jitter * sizeAmp; gl_Position = projectionMatrix * mv; }
                             `,
                             fragmentShader: `
                                 precision highp float; varying float vPsi; varying vec3 vColor; varying float vDither; varying float vZoom; 
@@ -1714,30 +1737,49 @@ void main() {
                     const posArr = geom.getAttribute('position').array;
                     const colArr = geom.getAttribute('aColor').array;
                     const psiArr = geom.getAttribute('aPsi').array;
-                    // Fill via rejection sampling using estimateMaxPsi2
-                    const maxPsi2 = estimateMaxPsi2(n, l, m, Math.min(1200, Math.max(200, numPoints)));
-                    let written = 0, attempts = 0, MAX_ATTEMPTS = numPoints * 20;
-                    while (written < numPoints && attempts < MAX_ATTEMPTS) {
-                        attempts++;
-                        const r = Math.random() * maxRadius;
-                        const theta = Math.acos(2 * Math.random() - 1);
-                        const phi = Math.random() * 2 * Math.PI;
+                    // Fill using importance sampling via inverse CDFs (scientifically accurate)
+                    const rk = `${n}_${l}`;
+                    const ak = `${l}_${m}`;
+                    if (!radialCache[rk]) {
+                        const radTex = createRadialLUT(n, l, 1024);
+                        radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n, l, 1024), maxR: radTex._maxRabs || 1 };
+                    }
+                    if (!angularCache[ak]) {
+                        angularCache[ak] = createAngularInvTables(l, m, 256, 256);
+                    }
+                    const radialInvCdf = radialCache[rk].invCdf;
+                    const radialArray = radialInvCdf._cpuArray;
+                    const radialSize = radialInvCdf.image.width;
+                    const { invThetaData, invPhiData, thetaSize, phiSize } = angularCache[ak];
+                    for (let i = 0; i < numPoints; i++) {
+                        const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
+                        // radius
+                        const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
+                        const rNorm = radialArray[rIdx * 4];
+                        const r = rNorm * maxRadius;
+                        // theta
+                        const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
+                        const thetaNorm = invThetaData[thetaIdx * 4];
+                        const theta = thetaNorm * Math.PI;
+                        // phi conditional on theta row
+                        const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
+                        const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
+                        const phiNorm = invPhiData[phiDataIdx];
+                        const phi = phiNorm * 2 * Math.PI;
+                        // Cartesian
                         const sinTheta = Math.sin(theta);
                         const cosTheta = Math.cos(theta);
                         const cosPhi = Math.cos(phi);
+                        const sinPhi = Math.sin(phi);
                         const x = r * sinTheta * cosPhi;
-                        const y = r * sinTheta * Math.sin(phi);
+                        const y = r * sinTheta * sinPhi;
                         const z = r * cosTheta;
                         const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
-                        const psi2 = psi * psi;
-                        if (Math.random() <= psi2 / maxPsi2) {
-                            const i = written * 3;
-                            posArr[i] = x; posArr[i+1] = y; posArr[i+2] = z;
-                            const c = psi >= 0 ? colorPositive : colorNegative;
-                            colArr[i] = c.r; colArr[i+1] = c.g; colArr[i+2] = c.b;
-                            psiArr[written] = psi;
-                            written++;
-                        }
+                        const p = i * 3;
+                        posArr[p] = x; posArr[p+1] = y; posArr[p+2] = z;
+                        const c = psi >= 0 ? colorPositive : colorNegative;
+                        colArr[p] = c.r; colArr[p+1] = c.g; colArr[p+2] = c.b;
+                        psiArr[i] = psi;
                     }
                     geom.getAttribute('position').needsUpdate = true;
                     geom.getAttribute('aColor').needsUpdate = true;
@@ -1781,16 +1823,37 @@ void main() {
                     return;
                 }
 
-                // First pass: sample and store transforms separately by sign
+                // First pass: importance-sample positions; no rejection
                 const posTransforms = [];
                 const negTransforms = [];
-                const MAX_ATTEMPTS = numPoints * 5;
-                let attempts = 0;
-                while ((posTransforms.length + negTransforms.length) < numPoints && attempts < MAX_ATTEMPTS) {
-                    attempts++;
-                    const r = Math.random() * maxRadius;
-                    const theta = Math.acos(2 * Math.random() - 1);
-                    const phi = Math.random() * 2 * Math.PI;
+                const rk = `${n}_${l}`;
+                if (!radialCache[rk]) {
+                    const radTex = createRadialLUT(n, l, 1024);
+                    radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n, l, 1024), maxR: radTex._maxRabs || 1 };
+                }
+                const ak = `${l}_${m}`;
+                if (!angularCache[ak]) {
+                    angularCache[ak] = createAngularInvTables(l, m, 256, 256);
+                }
+                const radialInvCdf = radialCache[rk].invCdf;
+                const radialArray = radialInvCdf._cpuArray;
+                const radialSize = radialInvCdf.image.width;
+                const { invThetaData, invPhiData, thetaSize, phiSize } = angularCache[ak];
+                const radMax = radialCache[rk].maxR || 1;
+                const angMax = Math.sqrt(estimateMaxAngular2(l, m));
+                const ampMax = Math.max(1e-6, radMax * angMax);
+                for (let i = 0; i < numPoints; i++) {
+                    const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
+                    const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
+                    const rNorm = radialArray[rIdx * 4];
+                    const r = rNorm * maxRadius;
+                    const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
+                    const thetaNorm = invThetaData[thetaIdx * 4];
+                    const theta = thetaNorm * Math.PI;
+                    const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
+                    const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
+                    const phiNorm = invPhiData[phiDataIdx];
+                    const phi = phiNorm * 2 * Math.PI;
                     const sinTheta = Math.sin(theta);
                     const cosTheta = Math.cos(theta);
                     const cosPhi = Math.cos(phi);
@@ -1799,11 +1862,8 @@ void main() {
                     const y = r * sinTheta * sinPhi;
                     const z = r * cosTheta;
                     const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
-                    const psi2 = psi * psi;
-                    if (Math.random() <= psi2 / maxPsi2) {
-                        const scale = 0.55 + 0.45 * Math.min(1, Math.sqrt(psi2 / maxPsi2));
-                        if (psi >= 0) posTransforms.push({ x, y, z, scale }); else negTransforms.push({ x, y, z, scale });
-                    }
+                    const scale = 0.55 + 0.45 * Math.min(1, Math.abs(psi) / ampMax);
+                    if (psi >= 0) posTransforms.push({ x, y, z, scale }); else negTransforms.push({ x, y, z, scale });
                 }
 
                 // Choose geometry and materials based on impostor mode (only for instanced mode)
@@ -2027,7 +2087,11 @@ void main() {
                             const idx = i * 3;
                             posArr[idx] = x; posArr[idx+1] = y; posArr[idx+2] = z;
                             colArr[idx] = c.r; colArr[idx+1] = c.g; colArr[idx+2] = c.b;
+                            // Update amplitude
+                            const psiAttr = geom.getAttribute('aPsi');
+                            psiAttr.array[i] = psi;
                         }
+                        geom.getAttribute('aPsi').needsUpdate = true;
                     } else {
                         // Adaptive mode for points: update random subset using importance sampling
                         const rk = `${pointsN}_${pointsL}`;
@@ -2084,6 +2148,8 @@ void main() {
                             const posIdx = idx * 3;
                             posArr[posIdx] = x; posArr[posIdx+1] = y; posArr[posIdx+2] = z;
                             colArr[posIdx] = c.r; colArr[posIdx+1] = c.g; colArr[posIdx+2] = c.b;
+                            const psiAttr = geom.getAttribute('aPsi');
+                            psiAttr.array[idx] = psi;
                         }
                         
                         // Since we're using importance sampling, acceptance rate is always 100%
@@ -2093,6 +2159,7 @@ void main() {
                     
                     geom.getAttribute('position').needsUpdate = true;
                     geom.getAttribute('aColor').needsUpdate = true;
+                    geom.getAttribute('aPsi').needsUpdate = true;
                     return;
                 }
 
@@ -2110,15 +2177,28 @@ void main() {
                 const negCapacity = currentOrbital._negCapacity;
                 const totalCapacity = posCapacity + negCapacity;
                 if (!adaptiveEnabled) {
-                    // ORIGINAL full refresh path (non-adaptive)
-                    let posFilled = 0, negFilled = 0, attempts = 0, accepted = 0;
-                    const maxPsi2 = estimateMaxPsi2(n, l, m, 1500);
-                    const maxAttempts = totalCapacity * 15;
+                    // Full refresh using importance sampling (no rejection)
+                    let posFilled = 0, negFilled = 0, attempts = 0;
+                    const rk = `${n}_${l}`; const ak = `${l}_${m}`;
+                    if (!radialCache[rk]) { const radTex = createRadialLUT(n, l, 1024); radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n, l, 1024), maxR: radTex._maxRabs || 1 }; }
+                    if (!angularCache[ak]) { angularCache[ak] = createAngularInvTables(l, m, 256, 256); }
+                    const radialInvCdf = radialCache[rk].invCdf; const radialArray = radialInvCdf._cpuArray; const radialSize = radialInvCdf.image.width;
+                    const { invThetaData, invPhiData, thetaSize, phiSize } = angularCache[ak];
+                    const radMax = radialCache[rk].maxR || 1; const angMax = Math.sqrt(estimateMaxAngular2(l, m)); const ampMax = Math.max(1e-6, radMax * angMax);
+                    const maxAttempts = totalCapacity * 8;
                     while ((posFilled < posCapacity || negFilled < negCapacity) && attempts < maxAttempts) {
                         attempts++;
-                        const r = Math.random() * maxRadius;
-                        const theta = Math.acos(2 * Math.random() - 1);
-                        const phi = Math.random() * 2 * Math.PI;
+                        const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
+                        const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
+                        const rNorm = radialArray[rIdx * 4];
+                        const r = rNorm * maxRadius;
+                        const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
+                        const thetaNorm = invThetaData[thetaIdx * 4];
+                        const theta = thetaNorm * Math.PI;
+                        const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
+                        const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
+                        const phiNorm = invPhiData[phiDataIdx];
+                        const phi = phiNorm * 2 * Math.PI;
                         const sinTheta = Math.sin(theta);
                         const cosTheta = Math.cos(theta);
                         const cosPhi = Math.cos(phi);
@@ -2126,18 +2206,14 @@ void main() {
                         const y = r * sinTheta * Math.sin(phi);
                         const z = r * cosTheta;
                         const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
-                        const psi2 = psi * psi;
-                        if (Math.random() <= psi2 / maxPsi2) {
-                            const scale = 0.55 + 0.45 * Math.min(1, Math.sqrt(psi2 / maxPsi2));
-                            dummyObject3D.position.set(x, y, z);
-                            dummyObject3D.scale.setScalar(scale);
-                            dummyObject3D.updateMatrix();
-                            if (psi >= 0 && posFilled < posCapacity) {
-                                posMesh.setMatrixAt(posFilled++, dummyObject3D.matrix);
-                            } else if (psi < 0 && negFilled < negCapacity) {
-                                negMesh.setMatrixAt(negFilled++, dummyObject3D.matrix);
-                            }
-                            accepted++;
+                        const scale = 0.55 + 0.45 * Math.min(1, Math.abs(psi) / ampMax);
+                        dummyObject3D.position.set(x, y, z);
+                        dummyObject3D.scale.setScalar(scale);
+                        dummyObject3D.updateMatrix();
+                        if (psi >= 0 && posFilled < posCapacity) {
+                            posMesh.setMatrixAt(posFilled++, dummyObject3D.matrix);
+                        } else if (psi < 0 && negFilled < negCapacity) {
+                            negMesh.setMatrixAt(negFilled++, dummyObject3D.matrix);
                         }
                     }
                     // Hide remainder
@@ -2166,32 +2242,42 @@ void main() {
 
                 let attempts = 0, accepted = 0;
                 function updateOne(targetMesh, isPositive, index) {
-                    // attempt loop per slot
+                    // attempt loop per slot to match sign, sampling via inverse CDFs
                     const ATTEMPT_LIMIT = 40;
+                    const rk = `${n}_${l}`; const ak = `${l}_${m}`;
+                    if (!radialCache[rk]) { const radTex = createRadialLUT(n, l, 1024); radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n, l, 1024), maxR: radTex._maxRabs || 1 }; }
+                    if (!angularCache[ak]) { angularCache[ak] = createAngularInvTables(l, m, 256, 256); }
+                    const radialInvCdf = radialCache[rk].invCdf; const radialArray = radialInvCdf._cpuArray; const radialSize = radialInvCdf.image.width;
+                    const { invThetaData, invPhiData, thetaSize, phiSize } = angularCache[ak];
+                    const radMax = radialCache[rk].maxR || 1; const angMax = Math.sqrt(estimateMaxAngular2(l, m)); const ampMax = Math.max(1e-6, radMax * angMax);
                     for (let a = 0; a < ATTEMPT_LIMIT; a++) {
                         attempts++;
-                        const r = Math.random() * maxRadius;
-                        const theta = Math.acos(2 * Math.random() - 1);
-                        const phi = Math.random() * 2 * Math.PI;
+                        const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
+                        const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
+                        const rNorm = radialArray[rIdx * 4];
+                        const r = rNorm * maxRadius;
+                        const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
+                        const thetaNorm = invThetaData[thetaIdx * 4];
+                        const theta = thetaNorm * Math.PI;
+                        const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
+                        const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
+                        const phiNorm = invPhiData[phiDataIdx];
+                        const phi = phiNorm * 2 * Math.PI;
                         const sinTheta = Math.sin(theta);
                         const cosTheta = Math.cos(theta);
                         const cosPhi = Math.cos(phi);
-                        const sinPhi = Math.sin(phi);
                         const x = r * sinTheta * cosPhi;
-                        const y = r * sinTheta * sinPhi;
+                        const y = r * sinTheta * Math.sin(phi);
                         const z = r * cosTheta;
                         const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
                         if ((isPositive && psi < 0) || (!isPositive && psi >= 0)) continue; // sign mismatch
-                        const psi2 = psi * psi;
-                        if (Math.random() <= psi2 / maxPsi2) {
-                            const scale = 0.55 + 0.45 * Math.min(1, Math.sqrt(psi2 / maxPsi2));
-                            dummyObject3D.position.set(x, y, z);
-                            dummyObject3D.scale.setScalar(scale);
-                            dummyObject3D.updateMatrix();
-                            targetMesh.setMatrixAt(index, dummyObject3D.matrix);
-                            accepted++;
-                            break;
-                        }
+                        const scale = 0.55 + 0.45 * Math.min(1, Math.abs(psi) / ampMax);
+                        dummyObject3D.position.set(x, y, z);
+                        dummyObject3D.scale.setScalar(scale);
+                        dummyObject3D.updateMatrix();
+                        targetMesh.setMatrixAt(index, dummyObject3D.matrix);
+                        accepted++;
+                        break;
                     }
                 }
                 for (let i = 0; i < posUpdates; i++) updateOne(posMesh, true, (Math.random() * posCapacity) | 0);
