@@ -65,5 +65,9 @@ Opening `index.html` directly from disk also works for most features, but some G
 - WebGPU unavailable: ensure your browser version supports WebGPU and it’s enabled; the app will fall back to other modes.
 - Tailwind CDN error: the app pins Tailwind Play CDN to a stable version to avoid runtime issues.
 
+## Tests
+- Run unit tests: `npm test`
+- CI runs the same tests on push/PR via GitHub Actions (see `.github/workflows/ci.yml`).
+
 ## License
 See [LICENSE](LICENSE).

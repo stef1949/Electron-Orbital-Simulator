@@ -28,6 +28,20 @@ function radialR(n,l,r){
   const N = (2/(n*n)) * Math.sqrt(fact(n-l-1)/fact(n+l));
   return N * Math.exp(-rho/2) * Math.pow(rho, l) * assocLaguerre(p, alpha, rho);
 }
+// Stable associated Laguerre polynomial L_p^{(alpha)}(x) via recurrence
+function assocLaguerre(p, alpha, x){
+  if (p === 0) return 1;
+  if (p === 1) return -x + alpha + 1;
+  let Lkm2 = 1;
+  let Lkm1 = -x + alpha + 1;
+  for (let k = 2; k <= p; k++){
+    const a = (2*(k-1) + alpha + 1 - x) * Lkm1;
+    const b = ((k-1) + alpha) * Lkm2;
+    const Lk = (a - b) / k;
+    Lkm2 = Lkm1; Lkm1 = Lk;
+  }
+  return Lkm1;
+}
 function realY(l,m,theta,phi){
   const PI = Math.PI; const x = Math.cos(theta); const am = Math.abs(m);
   const Plm = assocLegendre(l, am, x);
