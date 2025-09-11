@@ -78,36 +78,60 @@ fn rand01(n: ptr<function,u32>)->f32{ (*n)=xs32(lcg(*n)); return f32((*n)&167772
 fn sample1D_R(size:u32,u:f32)->f32{ let x=clamp(u,0.0,1.0)*f32(max(1u,size)-1u); let i0=u32(floor(x)); let i1=min(i0+1u,max(1u,size)-1u); let t=x-f32(i0); let a=invR[i0*4u]; let b=invR[i1*4u]; return mix(a,b,t);} 
 fn sample1D_T(size:u32,u:f32)->f32{ let x=clamp(u,0.0,1.0)*f32(max(1u,size)-1u); let i0=u32(floor(x)); let i1=min(i0+1u,max(1u,size)-1u); let t=x-f32(i0); let a=invTheta[i0*4u]; let b=invTheta[i1*4u]; return mix(a,b,t);} 
 fn samplePhi(row:u32,u:f32)->f32{ let size=params.phiSize; let base=row*size*4u; let x=clamp(u,0.0,1.0)*f32(max(1u,size)-1u); let j0=u32(floor(x)); let j1=min(j0+1u,max(1u,size)-1u); let t=x-f32(j0); let a=invPhi[base+j0*4u]; let b=invPhi[base+j1*4u]; return mix(a,b,t);} 
-fn getAngular(th:f32,ph:f32,l:f32,m:f32)->f32{
-  // Since we're using importance sampling from pre-computed LUTs,
-  // this is used mainly for sign of psi for color.
-  if (l == 0.0) { return 1.0; }
+// Factorial for small n (n<=12 is enough for our l range)
+fn factorialf(n:i32)->f32{ var f: f32 = 1.0; var i:i32 = 2; loop { if (i>n) { break; } f = f * f32(i); i = i + 1; } return f; }
 
-  if (l == 1.0) {
-    if (m == 0.0) { return cos(th); }
-    if (m == 1.0) { return sin(th) * cos(ph); }
-    return sin(th) * sin(ph);
+// Associated Legendre P_l^m(x) using recurrence (|m|<=l)
+fn assocLegendreP(l:i32, m:i32, x:f32)->f32{
+  var mm:i32 = m;
+  var pmm:f32 = 1.0;
+  if (mm > 0) {
+    let somx2 = sqrt(max(0.0, 1.0 - x*x));
+    var odd:f32 = 1.0;
+    var i:i32 = 1;
+    loop {
+      if (i>mm) { break; }
+      odd = odd * f32(2*i - 1);
+      i = i + 1;
+    }
+    // (-1)^m handled by multiplying by -1 when m is odd
+    let sign = select(-1.0, 1.0, (mm & 1) == 0);
+    pmm = sign * odd * pow(somx2, f32(mm));
   }
+  if (l == mm) { return pmm; }
+  var pmmp1:f32 = x * (2.0 * f32(mm) + 1.0) * pmm;
+  if (l == mm + 1) { return pmmp1; }
+  var pmmPrev:f32 = pmm;
+  var pmml:f32 = pmmp1;
+  var pll:f32 = 0.0;
+  var ll:i32 = mm + 2;
+  loop {
+    if (ll > l) { break; }
+    pll = ((2.0 * f32(ll) - 1.0) * x * pmml - (f32(ll + mm - 1)) * pmmPrev) / (f32(ll - mm));
+    pmmPrev = pmml;
+    pmml = pll;
+    ll = ll + 1;
+  }
+  return pmml;
+}
 
-  if (l == 2.0) {
-    let ct = cos(th);
-    let st = sin(th);
-    if (m == 0.0) { return 1.5 * ct * ct - 0.5; }
-    if (m == 1.0) { return -1.732 * st * ct * cos(ph); }
-    if (m == -1.0) { return 1.732 * st * ct * sin(ph); }
-    if (m == 2.0) { return 0.866 * st * st * cos(2.0 * ph); }
-    return 0.866 * st * st * sin(2.0 * ph);
-  }
+// Real spherical harmonic (normalized), Y_lm(real)
+fn realY(l:f32, m:f32, theta:f32, phi:f32)->f32{
+  let li:i32 = i32(l + 0.5);
+  let mi:i32 = i32(abs(m) + 0.5);
+  let x = cos(theta);
+  let Plm = assocLegendreP(li, mi, x);
+  let norm = sqrt(((2.0 * f32(li) + 1.0) / (4.0 * 3.141592653589793)) * (factorialf(li - mi) / max(1.0, factorialf(li + mi))));
+  if (mi == 0) { return norm * Plm; }
+  let base = sqrt(2.0) * norm * Plm;
+  return select(base * sin(f32(mi) * phi), base * cos(f32(mi) * phi), m >= 0.0);
+}
 
-  // For higher l values, use simplified approximations for sign determination
-  if (l >= 3.0) {
-    let ct = cos(th);
-    let st = sin(th);
-    if (m == 0.0) { return ct; } // Simple approximation
-    // For non-zero m, use trigonometric approximation based on m and phi
-    return st * select(sin(abs(m) * ph), cos(abs(m) * ph), m >= 0.0);
-  }
-  return 1.0;
+fn getAngular(th:f32, ph:f32, l:f32, m:f32)->f32{ return realY(l, m, th, ph); }
+
+export function setWebGPUVisible(webgpu: any, visible: boolean): void {
+  if (!webgpu || !webgpu.canvas) return;
+  webgpu.canvas.style.display = visible ? 'block' : 'none';
 }
 @compute @workgroup_size(256) fn cs(@builtin(global_invocation_id) gid:vec3<u32>){ let id=gid.x; if(id>=params.numPoints){return;} var state=rngStates[id]; if(state==0u){ state=lcg(id ^ params.seed ^ params.frame);} let u1=rand01(&state); let u2=rand01(&state); let u3=rand01(&state); let rNorm=sample1D_R(params.radialSize,u1); let r=rNorm*params.maxRadius; let tNorm=sample1D_T(params.thetaSize,u2); let th=tNorm*3.14159265; let rf=clamp(tNorm*f32(params.thetaSize-1u),0.0,f32(params.thetaSize-1u)); let r0=u32(floor(rf)); let r1=min(params.thetaSize-1u,r0+1u); let fr=rf-f32(r0); let p0=samplePhi(r0,u3); let p1=samplePhi(r1,u3); let ph=mix(p0,p1,fr)*6.2831853; let st=sin(th); let ct=cos(th); let x=r*st*cos(ph); let y=r*st*sin(ph); let z=r*ct; let psi=getAngular(th,ph,params.l,params.m); particles[id].pos=vec4<f32>(x,y,z,psi); rngStates[id]=state; }
 `;

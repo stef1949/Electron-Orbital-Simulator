@@ -67,16 +67,33 @@ window.addEventListener('load', async () => {
             gpuRT.dispose?.();
             gpuRT = null;
         }
+        // Also hide WebGPU canvas so previous frame isn't overlaid
+        try {
+            if (webgpu.canvas)
+                webgpu.canvas.style.display = 'none';
+        }
+        catch { }
         currentOrbital = null;
     }
     function regenerate() {
         clearOrbital();
         const { n, l, m } = currentOrbitalData;
         const numPoints = parseInt(densitySlider.value);
+        // Hide WebGPU canvas unless actively rendering in WebGPU mode
+        if (renderMode !== 'webgpu' && webgpu.canvas) {
+            try {
+                webgpu.canvas.style.display = 'none';
+            }
+            catch { }
+        }
         if (renderMode === 'webgpu') {
             initWebGPU(webgpu, document.getElementById('canvas-container')).then(ok => {
                 if (ok) {
                     ensureWebGPUParticles(webgpu, n, l, m, numPoints);
+                    try {
+                        webgpu.canvas.style.display = 'block';
+                    }
+                    catch { }
                 }
                 else {
                     renderMode = 'points';
@@ -168,6 +185,7 @@ window.addEventListener('load', async () => {
         }
         if (renderMode === 'instanced') {
             const sphereGeo = new T.SphereGeometry(0.12, 6, 6);
+            sphereGeo.computeBoundingSphere();
             const matPos = new T.MeshBasicMaterial({ color: colorPositive, transparent: true, opacity: 0.5, blending: T.AdditiveBlending, depthWrite: !occlusionEnabled, depthTest: occlusionEnabled });
             const matNeg = new T.MeshBasicMaterial({ color: colorNegative, transparent: true, opacity: 0.5, blending: T.AdditiveBlending, depthWrite: !occlusionEnabled, depthTest: occlusionEnabled });
             const transformsPos = [];
@@ -179,16 +197,39 @@ window.addEventListener('load', async () => {
             const radialSize = radialInvCdf.image.width;
             for (let i = 0; i < numPoints; i++) {
                 const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-                const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-                const rNorm = radialArray[rIdx * 4];
-                const r = rNorm * maxRadius;
-                const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-                const thetaNorm = invThetaData[thetaIdx * 4];
-                const theta = thetaNorm * Math.PI;
-                const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-                const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-                const phiNorm = invPhiData[phiDataIdx];
-                const phi = phiNorm * 2 * Math.PI;
+                // Radial inverse CDF (linear interp)
+                const xr = u1 * (radialSize - 1);
+                const r0 = Math.floor(xr);
+                const r1 = Math.min(r0 + 1, radialSize - 1);
+                const tr = xr - r0;
+                const rN0 = radialArray[r0 * 4];
+                const rN1 = radialArray[r1 * 4];
+                const r = ((1 - tr) * rN0 + tr * rN1) * maxRadius;
+                // Theta inverse CDF (linear interp)
+                const xt = u2 * (thetaSize - 1);
+                const t0 = Math.floor(xt);
+                const t1 = Math.min(t0 + 1, thetaSize - 1);
+                const tt = xt - t0;
+                const thN0 = invThetaData[t0 * 4];
+                const thN1 = invThetaData[t1 * 4];
+                const thN = (1 - tt) * thN0 + tt * thN1;
+                const theta = thN * Math.PI;
+                // Phi inverse CDF with bilinear row blend
+                const xp = u3 * (phiSize - 1);
+                const p0 = Math.floor(xp);
+                const p1 = Math.min(p0 + 1, phiSize - 1);
+                const tp = xp - p0;
+                const rowF = Math.max(0, Math.min(thetaSize - 1, thN * (thetaSize - 1)));
+                const rt0 = Math.floor(rowF);
+                const rt1 = Math.min(rt0 + 1, thetaSize - 1);
+                const fr = rowF - rt0;
+                const a00 = invPhiData[(rt0 * phiSize + p0) * 4];
+                const a01 = invPhiData[(rt0 * phiSize + p1) * 4];
+                const a10 = invPhiData[(rt1 * phiSize + p0) * 4];
+                const a11 = invPhiData[(rt1 * phiSize + p1) * 4];
+                const phiN_row0 = (1 - tp) * a00 + tp * a01;
+                const phiN_row1 = (1 - tp) * a10 + tp * a11;
+                const phi = ((1 - fr) * phiN_row0 + fr * phiN_row1) * 2 * Math.PI;
                 const sinTheta = Math.sin(theta);
                 const x = r * sinTheta * Math.cos(phi);
                 const y = r * sinTheta * Math.sin(phi);
@@ -208,12 +249,19 @@ window.addEventListener('load', async () => {
             const dummy = new T.Object3D();
             transformsPos.forEach((t, i) => { dummy.position.set(t.x, t.y, t.z); dummy.scale.setScalar(t.scale); dummy.updateMatrix(); posMesh.setMatrixAt(i, dummy.matrix); });
             transformsNeg.forEach((t, i) => { dummy.position.set(t.x, t.y, t.z); dummy.scale.setScalar(t.scale); dummy.updateMatrix(); negMesh.setMatrixAt(i, dummy.matrix); });
+            posMesh.count = Math.max(0, transformsPos.length);
+            negMesh.count = Math.max(0, transformsNeg.length);
+            posMesh.instanceMatrix.needsUpdate = true;
+            negMesh.instanceMatrix.needsUpdate = true;
+            posMesh.frustumCulled = false;
+            negMesh.frustumCulled = false;
             posMesh.userData = { isOrbital: true };
             negMesh.userData = { isOrbital: true };
             const group = new T.Group();
             group.add(posMesh);
             group.add(negMesh);
             group.userData = { isOrbital: true };
+            group.frustumCulled = false;
             scene.add(group);
             currentOrbital = group;
             return;
@@ -261,17 +309,39 @@ window.addEventListener('load', async () => {
                 const radialSize = radialInvCdf.image.width;
                 for (let i = 0; i < numPoints; i++) {
                     const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-                    // Sample using importance sampling
-                    const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-                    const rNorm = radialArray[rIdx * 4];
-                    const r = rNorm * maxRadius;
-                    const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-                    const thetaNorm = invThetaData[thetaIdx * 4];
-                    const theta = thetaNorm * Math.PI;
-                    const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-                    const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-                    const phiNorm = invPhiData[phiDataIdx];
-                    const phi = phiNorm * 2 * Math.PI;
+                    // Radial (interp)
+                    const xr = u1 * (radialSize - 1);
+                    const r0 = Math.floor(xr);
+                    const r1 = Math.min(r0 + 1, radialSize - 1);
+                    const tr = xr - r0;
+                    const rN0 = radialArray[r0 * 4];
+                    const rN1 = radialArray[r1 * 4];
+                    const r = ((1 - tr) * rN0 + tr * rN1) * maxRadius;
+                    // Theta (interp)
+                    const xt = u2 * (thetaSize - 1);
+                    const t0 = Math.floor(xt);
+                    const t1 = Math.min(t0 + 1, thetaSize - 1);
+                    const tt = xt - t0;
+                    const thN0 = invThetaData[t0 * 4];
+                    const thN1 = invThetaData[t1 * 4];
+                    const thN = (1 - tt) * thN0 + tt * thN1;
+                    const theta = thN * Math.PI;
+                    // Phi (bilinear across phi and theta rows)
+                    const xp = u3 * (phiSize - 1);
+                    const p0 = Math.floor(xp);
+                    const p1 = Math.min(p0 + 1, phiSize - 1);
+                    const tp = xp - p0;
+                    const rowF = Math.max(0, Math.min(thetaSize - 1, thN * (thetaSize - 1)));
+                    const rt0 = Math.floor(rowF);
+                    const rt1 = Math.min(rt0 + 1, thetaSize - 1);
+                    const fr = rowF - rt0;
+                    const a00 = invPhiData[(rt0 * phiSize + p0) * 4];
+                    const a01 = invPhiData[(rt0 * phiSize + p1) * 4];
+                    const a10 = invPhiData[(rt1 * phiSize + p0) * 4];
+                    const a11 = invPhiData[(rt1 * phiSize + p1) * 4];
+                    const phiN_row0 = (1 - tp) * a00 + tp * a01;
+                    const phiN_row1 = (1 - tp) * a10 + tp * a11;
+                    const phi = ((1 - fr) * phiN_row0 + fr * phiN_row1) * 2 * Math.PI;
                     const sinTheta = Math.sin(theta), cosTheta = Math.cos(theta);
                     const x = r * sinTheta * Math.cos(phi);
                     const y = r * sinTheta * Math.sin(phi);
@@ -301,16 +371,39 @@ window.addEventListener('load', async () => {
                 for (let i = 0; i < updates; i++) {
                     const idx = (Math.random() * numPoints) | 0;
                     const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-                    const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-                    const rNorm = radialArray[rIdx * 4];
-                    const r = rNorm * maxRadius;
-                    const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-                    const thetaNorm = invThetaData[thetaIdx * 4];
-                    const theta = thetaNorm * Math.PI;
-                    const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-                    const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-                    const phiNorm = invPhiData[phiDataIdx];
-                    const phi = phiNorm * 2 * Math.PI;
+                    // Radial (interp)
+                    const xr = u1 * (radialSize - 1);
+                    const r0 = Math.floor(xr);
+                    const r1 = Math.min(r0 + 1, radialSize - 1);
+                    const tr = xr - r0;
+                    const rN0 = radialArray[r0 * 4];
+                    const rN1 = radialArray[r1 * 4];
+                    const r = ((1 - tr) * rN0 + tr * rN1) * maxRadius;
+                    // Theta (interp)
+                    const xt = u2 * (thetaSize - 1);
+                    const t0 = Math.floor(xt);
+                    const t1 = Math.min(t0 + 1, thetaSize - 1);
+                    const tt = xt - t0;
+                    const thN0 = invThetaData[t0 * 4];
+                    const thN1 = invThetaData[t1 * 4];
+                    const thN = (1 - tt) * thN0 + tt * thN1;
+                    const theta = thN * Math.PI;
+                    // Phi (bilinear)
+                    const xp = u3 * (phiSize - 1);
+                    const p0 = Math.floor(xp);
+                    const p1 = Math.min(p0 + 1, phiSize - 1);
+                    const tp = xp - p0;
+                    const rowF = Math.max(0, Math.min(thetaSize - 1, thN * (thetaSize - 1)));
+                    const rt0 = Math.floor(rowF);
+                    const rt1 = Math.min(rt0 + 1, thetaSize - 1);
+                    const fr = rowF - rt0;
+                    const a00 = invPhiData[(rt0 * phiSize + p0) * 4];
+                    const a01 = invPhiData[(rt0 * phiSize + p1) * 4];
+                    const a10 = invPhiData[(rt1 * phiSize + p0) * 4];
+                    const a11 = invPhiData[(rt1 * phiSize + p1) * 4];
+                    const phiN_row0 = (1 - tp) * a00 + tp * a01;
+                    const phiN_row1 = (1 - tp) * a10 + tp * a11;
+                    const phi = ((1 - fr) * phiN_row0 + fr * phiN_row1) * 2 * Math.PI;
                     const sinTheta = Math.sin(theta);
                     const x = r * sinTheta * Math.cos(phi);
                     const y = r * sinTheta * Math.sin(phi);
