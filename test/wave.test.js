@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { getWaveFunctionValue, estimateMaxAngular2, estimateMaxPsi2 } from '../src/math/wave.js';
+import { getWaveFunctionValue, estimateMaxAngular2, estimateMaxPsi2 } from '../dist/math/wave.js';
 
 const TWO_PI = 2 * Math.PI;
 
@@ -28,4 +28,3 @@ test('estimateMaxPsi2 returns positive finite value', () => {
   const val = estimateMaxPsi2(1, 0, 0, 200);
   assert.ok(Number.isFinite(val) && val > 0);
 });
-

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { modeLabel } from '../src/config.js';
+import { modeLabel } from '../dist/config.js';
 
 test('modeLabel: points', () => {
   assert.equal(modeLabel('points', true), 'Mode: Points');
@@ -18,4 +18,3 @@ test('modeLabel: webgpu supported', () => {
 test('modeLabel: webgpu unsupported', () => {
   assert.equal(modeLabel('webgpu', false), 'Mode: WebGPU (No Support)');
 });
-

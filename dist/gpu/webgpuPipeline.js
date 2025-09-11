@@ -78,33 +78,34 @@ fn rand01(n: ptr<function,u32>)->f32{ (*n)=xs32(lcg(*n)); return f32((*n)&167772
 fn sample1D_R(size:u32,u:f32)->f32{ let x=clamp(u,0.0,1.0)*f32(max(1u,size)-1u); let i0=u32(floor(x)); let i1=min(i0+1u,max(1u,size)-1u); let t=x-f32(i0); let a=invR[i0*4u]; let b=invR[i1*4u]; return mix(a,b,t);} 
 fn sample1D_T(size:u32,u:f32)->f32{ let x=clamp(u,0.0,1.0)*f32(max(1u,size)-1u); let i0=u32(floor(x)); let i1=min(i0+1u,max(1u,size)-1u); let t=x-f32(i0); let a=invTheta[i0*4u]; let b=invTheta[i1*4u]; return mix(a,b,t);} 
 fn samplePhi(row:u32,u:f32)->f32{ let size=params.phiSize; let base=row*size*4u; let x=clamp(u,0.0,1.0)*f32(max(1u,size)-1u); let j0=u32(floor(x)); let j1=min(j0+1u,max(1u,size)-1u); let t=x-f32(j0); let a=invPhi[base+j0*4u]; let b=invPhi[base+j1*4u]; return mix(a,b,t);} 
-fn getAngular(th:f32,ph:f32,l:f32,m:f32)->f32{ 
-  // Since we're using importance sampling from pre-computed LUTs, 
-  // the spatial distribution is already correct. This function is mainly
-  // used for determining the sign of psi for color coding.
-  // For scientific accuracy, the actual magnitude should come from the 
-  // wave function evaluation, but for visual purposes this approximation suffices.
-  
-  if(l==0.0){return 1.0;} 
-  if(l==1.0){ 
-    if(m==0.0)return cos(th); 
-    if(m==1.0)return sin(th)*cos(ph); 
-    return sin(th)*sin(ph);
-  } 
-  if(l==2.0){ 
-    let ct=cos(th); let st=sin(th); 
-    if(m==0.0)return 1.5*ct*ct-0.5; 
-    if(m==1.0)return -1.732*st*ct*cos(ph); 
-    if(m==-1.0)return 1.732*st*ct*sin(ph); 
-    if(m==2.0)return 0.866*st*st*cos(2.0*ph); 
-    return 0.866*st*st*sin(2.0*ph);
-  } 
+fn getAngular(th:f32,ph:f32,l:f32,m:f32)->f32{
+  // Since we're using importance sampling from pre-computed LUTs,
+  // this is used mainly for sign of psi for color.
+  if (l == 0.0) { return 1.0; }
+
+  if (l == 1.0) {
+    if (m == 0.0) { return cos(th); }
+    if (m == 1.0) { return sin(th) * cos(ph); }
+    return sin(th) * sin(ph);
+  }
+
+  if (l == 2.0) {
+    let ct = cos(th);
+    let st = sin(th);
+    if (m == 0.0) { return 1.5 * ct * ct - 0.5; }
+    if (m == 1.0) { return -1.732 * st * ct * cos(ph); }
+    if (m == -1.0) { return 1.732 * st * ct * sin(ph); }
+    if (m == 2.0) { return 0.866 * st * st * cos(2.0 * ph); }
+    return 0.866 * st * st * sin(2.0 * ph);
+  }
+
   // For higher l values, use simplified approximations for sign determination
-  if(l>=3.0){
-    let ct=cos(th); let st=sin(th);
-    if(m==0.0) return ct; // Simple approximation
+  if (l >= 3.0) {
+    let ct = cos(th);
+    let st = sin(th);
+    if (m == 0.0) { return ct; } // Simple approximation
     // For non-zero m, use trigonometric approximation based on m and phi
-    return st * select(sin(abs(m)*ph), cos(abs(m)*ph), m>=0.0);
+    return st * select(sin(abs(m) * ph), cos(abs(m) * ph), m >= 0.0);
   }
   return 1.0;
 }
@@ -167,6 +168,13 @@ export function ensureWebGPUParticles(webgpu, n, l, m, numPoints) {
     }
     webgpu.bindGroup = device.createBindGroup({ layout: webgpu.pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: webgpu.uniformBuffer } }, { binding: 1, resource: { buffer: webgpu.particleBuffer } }] });
     webgpu.computeBindGroup = device.createBindGroup({ layout: webgpu.computePipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: webgpu.invRBuffer } }, { binding: 1, resource: { buffer: webgpu.invThetaBuffer } }, { binding: 2, resource: { buffer: webgpu.invPhiBuffer } }, { binding: 3, resource: { buffer: webgpu.rngStateBuffer } }, { binding: 4, resource: { buffer: webgpu.particleBuffer } }, { binding: 5, resource: { buffer: webgpu.computeUniformBuffer } }] });
+    // Update compute uniforms with orbital parameters (l, m), keep sizes dynamic in frame update
+    const params = new DataView(webgpu._computeStaging);
+    // Offsets mirror renderWebGPUFrame packing:
+    // 0:radialSize 4:thetaSize 8:phiSize 12:numPoints 16:seed 20:frame 24:_pad 28:maxRadius 32:l 36:m
+    params.setFloat32(32, l, true);
+    params.setFloat32(36, m, true);
+    webgpu.device.queue.writeBuffer(webgpu.computeUniformBuffer, 0, webgpu._computeStaging);
 }
 export function renderWebGPUFrame(webgpu, camera, adaptiveFrame) {
     if (!webgpu.initialized)
@@ -184,6 +192,8 @@ export function renderWebGPUFrame(webgpu, camera, adaptiveFrame) {
     // build projection and view from THREE camera (approx)
     // We'll get matrices from camera directly
     camera.updateProjectionMatrix();
+    if (typeof camera.updateMatrixWorld === 'function')
+        camera.updateMatrixWorld(true);
     const proj = camera.projectionMatrix.elements;
     const view = camera.matrixWorldInverse.elements;
     for (let i = 0; i < 16; i++)

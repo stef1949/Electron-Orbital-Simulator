@@ -52,7 +52,7 @@ window.addEventListener('load', async () => {
     const webgpu = makeWebGPU();
     function updateModeButtonText() { modeButton.textContent = modeLabel(renderMode, !!navigator.gpu); }
     function clearOrbital() {
-        scene.children.slice().forEach(child => { if (child.userData && child.userData.isOrbital) {
+        scene.children.slice().forEach((child) => { if (child.userData && child.userData.isOrbital) {
             child.geometry?.dispose?.();
             child.material?.dispose?.();
             scene.remove(child);
@@ -74,9 +74,17 @@ window.addEventListener('load', async () => {
         const { n, l, m } = currentOrbitalData;
         const numPoints = parseInt(densitySlider.value);
         if (renderMode === 'webgpu') {
-            initWebGPU(webgpu, document.getElementById('canvas-container')).then(ok => { if (ok) {
-                ensureWebGPUParticles(webgpu, n, l, m, numPoints);
-            } updateModeButtonText(); });
+            initWebGPU(webgpu, document.getElementById('canvas-container')).then(ok => {
+                if (ok) {
+                    ensureWebGPUParticles(webgpu, n, l, m, numPoints);
+                }
+                else {
+                    renderMode = 'points';
+                }
+                updateModeButtonText();
+                if (!ok)
+                    regenerate();
+            });
             return;
         }
         if (renderMode === 'gpu') {
@@ -333,6 +341,8 @@ window.addEventListener('load', async () => {
         e.currentTarget.classList.add('active');
         const map = { '1s': [1, 0, 0], '2s': [2, 0, 0], '3s': [3, 0, 0], '2p_x': [2, 1, 1], '2p_y': [2, 1, -1], '2p_z': [2, 1, 0], '3p_x': [3, 1, 1], '3p_y': [3, 1, -1], '3p_z': [3, 1, 0], '3d_z2': [3, 2, 0], '3d_x2-y2': [3, 2, 2], '3d_xy': [3, 2, -2], '3d_xz': [3, 2, 1], '3d_yz': [3, 2, -1], '4s': [4, 0, 0], '4p_x': [4, 1, 1], '4p_y': [4, 1, -1], '4p_z': [4, 1, 0], '4d_z2': [4, 2, 0], '4d_x2-y2': [4, 2, 2], '4d_xy': [4, 2, -2], '4d_xz': [4, 2, 1], '4d_yz': [4, 2, -1] };
         const o = e.currentTarget.dataset.orbital;
+        if (!o)
+            return;
         const d = map[o];
         if (d) {
             currentOrbitalData = { n: d[0], l: d[1], m: d[2] };
@@ -359,20 +369,31 @@ window.addEventListener('load', async () => {
     clearButton.addEventListener('click', () => clearOrbital());
     screenshotButton.addEventListener('click', () => { const prevColor = renderer.getClearColor(new T.Color()).getHex(); const prevAlpha = renderer.getClearAlpha(); renderer.setClearColor(0x000000, 0); renderer.render(scene, camera); const dataURL = renderer.domElement.toDataURL('image/png'); renderer.setClearColor(prevColor, prevAlpha); const a = document.createElement('a'); a.href = dataURL; a.download = 'orbital_screenshot.png'; document.body.appendChild(a); a.click(); a.remove(); });
     // Resize
-    let resizeTimer = null;
-    window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { const w = window.innerWidth, h = window.innerHeight; camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setSize(w, h); }, 120); });
+    let resizeTimer;
+    window.addEventListener('resize', () => { if (resizeTimer !== undefined)
+        clearTimeout(resizeTimer); resizeTimer = window.setTimeout(() => { const w = window.innerWidth, h = window.innerHeight; camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setSize(w, h); }, 120); });
     // Animate
     let prevTime = performance.now();
     let frames = 0;
-    function animate() { requestAnimationFrame(animate); if (!paused)
-        resample(); controls.update(); if (renderMode !== 'webgpu')
-        renderer.render(scene, camera); const now = performance.now(); frames++; if (now - prevTime >= 1000) {
-        fpsCounter.textContent = `FPS: ${frames}`;
-        prevTime = now;
-        frames = 0;
-    } }
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        if (!paused)
+            resample();
+        if (renderMode !== 'webgpu')
+            renderer.render(scene, camera);
+        const now = performance.now();
+        frames++;
+        if (now - prevTime >= 1000) {
+            fpsCounter.textContent = `FPS: ${frames}`;
+            prevTime = now;
+            frames = 0;
+        }
+    }
     // Init UI
-    document.querySelector('[data-orbital="1s"]').classList.add('active');
+    const firstBtn = document.querySelector('[data-orbital="1s"]');
+    if (firstBtn)
+        firstBtn.classList.add('active');
     updateModeButtonText();
     regenerate();
     animate();
