@@ -1,12 +1,36 @@
+<p align="center">
+  <a href="https://github.com/stef1949/Electron-Orbital-Simulator/actions/workflows/ci.yml">
+    <img alt="Build Status" src="https://github.com/stef1949/Electron-Orbital-Simulator/actions/workflows/ci.yml/badge.svg">
+  </a>
+  <a href="https://github.com/stef1949/Electron-Orbital-Simulator/commits/main">
+    <img alt="Last Commit" src="https://img.shields.io/github/last-commit/stef1949/Electron-Orbital-Simulator">
+  </a>
+  <a href="https://github.com/stef1949/Electron-Orbital-Simulator/stargazers">
+    <img alt="Stars" src="https://img.shields.io/github/stars/stef1949/Electron-Orbital-Simulator">
+  </a>
+  <a href="https://github.com/stef1949/Electron-Orbital-Simulator/issues">
+    <img alt="Open Issues" src="https://img.shields.io/github/issues/stef1949/Electron-Orbital-Simulator">
+
+  </a>
+  <a href="https://github.com/stef1949/Electron-Orbital-Simulator/pulls">
+    <img alt="Open PRs" src="https://img.shields.io/github/issues-pr/stef1949/Electron-Orbital-Simulator">
+  </a>
+  
+  <a href="https://github.com/stef1949/Electron-Orbital-Simulator/blob/main/LICENSE">
+    <img alt="License" src="https://img.shields.io/github/license/stef1949/Electron-Orbital-Simulator">
+  </a>
+  <img alt="Node Version" src="https://img.shields.io/badge/node-20.x-339933?logo=node.js&logoColor=white">
+</p>
+
 <h1 align="center">Electron Orbital Visualiser</h1>
 <p align="center">
   <img src="assets/orbital_screenshot.png" alt="Electron Orbital" width="420" />
 </p>
 
-Interactive, high‑performance visualiser for hydrogen‑like electron orbitals. Implements normalized hydrogenic radial functions and real spherical harmonics (up to d; math extended for f), multiple render modes (CPU Points, GPU/WebGL, WebGPU), smooth camera snapping, HDR tone mapping, and an orientation gizmo.
+Interactive, high‑performance visualiser for hydrogen‑like electron orbitals. Implements normalized hydrogenic radial functions and real spherical harmonics (up to d; math extended for f), mult[...]
 
 ## Highlights
-- Physically motivated math: normalized hydrogenic radial R<sub>nl</sub>(r) with associated Laguerre recurrence, and real normalized Y<sub>lm</sub>(θ,φ) via associated Legendre (supports l ≤ 3 in code).
+- Physically motivated math: normalized hydrogenic radial R<sub>nl</sub>(r) with associated Laguerre recurrence, and real normalized Y<sub>lm</sub>(θ,φ) via associated Legendre (supports l ≤ 3 [...]
 - Four render paths:
   - Instanced: InstancedMesh spheres or billboard impostors.
   - Points: single BufferGeometry with importance sampling (fast CPU).
@@ -71,3 +95,10 @@ Opening `index.html` directly from disk also works for most features, but some G
 
 ## License
 See [LICENSE](LICENSE).
+
+<!--
+Optional future badges you can add later:
+- Release: https://img.shields.io/github/v/release/stef1949/Electron-Orbital-Simulator
+- CodeQL: (add a codeql.yml workflow) https://github.com/stef1949/Electron-Orbital-Simulator/actions/workflows/codeql.yml/badge.svg
+- Coverage (after integrating a tool like c8 + Codecov): https://img.shields.io/codecov/c/github/stef1949/Electron-Orbital-Simulator
+-->
