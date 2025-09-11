@@ -10,17 +10,14 @@
   </a>
   <a href="https://github.com/stef1949/Electron-Orbital-Simulator/issues">
     <img alt="Open Issues" src="https://img.shields.io/github/issues/stef1949/Electron-Orbital-Simulator">
-
   </a>
   <a href="https://github.com/stef1949/Electron-Orbital-Simulator/pulls">
     <img alt="Open PRs" src="https://img.shields.io/github/issues-pr/stef1949/Electron-Orbital-Simulator">
-  </a>
-  
-  <a href="https://github.com/stef1949/Electron-Orbital-Simulator/blob/main/LICENSE">
-    <img alt="License" src="https://img.shields.io/github/license/stef1949/Electron-Orbital-Simulator">
+  </a> 
+  <a href="LICENSE">
+  <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg">
   </a>
   <img alt="Node Version" src="https://img.shields.io/badge/node-20.x-339933?logo=node.js&logoColor=white">
-</p>
 
 <h1 align="center">Electron Orbital Visualiser</h1>
 <p align="center">
