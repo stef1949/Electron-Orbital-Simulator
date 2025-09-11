@@ -47,8 +47,8 @@ uniform float uThetaSize;
 
 float hash21(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 vec3 sph(float r, float t, float p) { return vec3(r * sin(t) * cos(p), r * sin(t) * sin(p), r * cos(t)); }
-float getR(float r) { float t = clamp(r / uMaxRadius, 0.0, 1.0); return texture(uRadialLUT, vec2(t, 0.0)).r; }
-float sampleR(float u) { float rN = texture(uInvRadialCDF, vec2(u, 0.0)).r; return rN * uMaxRadius; }
+float getR(float r) { float t = clamp(r / uMaxRadius, 0.0, 1.0); return texture2D(uRadialLUT, vec2(t, 0.0)).r; }
+float sampleR(float u) { float rN = texture2D(uInvRadialCDF, vec2(u, 0.0)).r; return rN * uMaxRadius; }
 float factorialf(int n){ float f=1.0; for(int i=2;i<=8;i++){ if(i>n) break; f*=float(i);} return f; }
 float assocLegendreP(int l,int m,float x){
   float pmm=1.0;
@@ -80,9 +80,9 @@ void main(){
   const vec2 R2 = vec2(0.754877666, 0.569840296); vec2 jitter = R2 * (uFrame + uSeed * 101.0); vec2 base = (vec2(ix,iy)+0.5+jitter)/uResolution;
   float u1 = hash21(base+0.11), u2 = hash21(base+0.37), u3 = hash21(base+0.59);
   float r = sampleR(u1);
-  float tN = texture(uInvThetaCDF, vec2(u2, 0.5)).r; float th = tN * 3.14159265;
+  float tN = texture2D(uInvThetaCDF, vec2(u2, 0.5)).r; float th = tN * 3.14159265;
   float rowF = clamp(tN * (uThetaSize - 1.0), 0.0, uThetaSize - 1.0); float r0=floor(rowF); float r1=min(uThetaSize-1.0, r0+1.0); float fr=rowF-r0;
-  float v0 = (r0+0.5)/uThetaSize, v1=(r1+0.5)/uThetaSize; float p0=texture(uInvPhiCDF, vec2(u3, v0)).r; float p1=texture(uInvPhiCDF, vec2(u3, v1)).r; float ph = mix(p0,p1,fr)*6.2831853;
+  float v0 = (r0+0.5)/uThetaSize, v1=(r1+0.5)/uThetaSize; float p0=texture2D(uInvPhiCDF, vec2(u3, v0)).r; float p1=texture2D(uInvPhiCDF, vec2(u3, v1)).r; float ph = mix(p0,p1,fr)*6.2831853;
   float radial = getR(r); float ang = getAngular(th, ph, uL, uM); float psi = radial * ang; vec3 pos = sph(r, th, ph);
   gl_FragColor = vec4(pos, psi);
 }`;
