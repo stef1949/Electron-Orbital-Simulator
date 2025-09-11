@@ -4,7 +4,11 @@
   "type": "module",
   "version": "0.0.0",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -w -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
   }
 }
-

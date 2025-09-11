@@ -234,7 +234,8 @@
         </div>
     </div>
 
-    <script>
+    <!-- Disabled inline script after TS migration -->
+    <script type="text/plain" data-disabled="ts-migrated">
         window.onload = function() {
             // --- Scene Setup ---
             const scene = new THREE.Scene();
@@ -2568,6 +2569,6 @@ void main() {
         // (clearOrbital now lives inside onload where scene/renderer exist)
     </script>
     <!-- Removed duplicate module script to prevent double initialization of scene/controls -->
-    <!-- <script type="module" src="./src/main.js"></script> -->
+    <script type="module" src="./dist/main.js"></script>
   </body>
 </html>
