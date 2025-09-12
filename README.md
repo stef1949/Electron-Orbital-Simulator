@@ -50,6 +50,24 @@ Interactive, high‑performance visualiser for hydrogen‑like electron orbitals
 
 Opening `index.html` directly from disk also works for most features, but some GPU paths may be limited by browser security.
 
+## Progressive Web App (PWA) Features
+This application includes full PWA support for enhanced webapp functionality:
+
+- **Installable**: Can be installed on desktop and mobile devices from the browser
+- **Offline Support**: Service worker caches static resources for offline use
+- **App-like Experience**: Runs in standalone mode when installed
+- **Responsive Icons**: Multiple icon sizes for different devices and contexts
+- **Theme Integration**: Proper theme colors for OS integration
+
+### Installing the PWA
+1. Visit the application in a modern browser (Chrome, Edge, Safari, Firefox)
+2. Look for the "Install" button in the address bar or browser menu
+3. Click "Install" to add it to your device as a native-like app
+4. Launch from your home screen, dock, or start menu
+
+### Offline Usage
+The PWA caches essential resources and provides fallback styling when CDN resources are unavailable, ensuring the app remains functional in offline or restricted network environments.
+
 ## UI & Controls
 - Right panel: orbital presets (1s, 2s/3s/4s; 2p/3p/4p; 3d/4d variants).
 - Bottom panel controls:
