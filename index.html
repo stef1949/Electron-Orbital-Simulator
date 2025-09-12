@@ -23,6 +23,20 @@
     <meta name="twitter:title" content="Electron Orbital Simulator">
     <meta name="twitter:description" content="Interactive, high-performance visualiser for hydrogen-like electron orbitals with real spherical harmonics and multiple render modes.">
     <meta name="twitter:image" content="https://stef1949.github.io/ElectronOrbitalVisualiser/assets/orbital_screenshot.png">
+    
+    <!-- PWA Meta Tags -->
+    <meta name="theme-color" content="#2e64e1">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Orbital Simulator">
+    <link rel="apple-touch-icon" href="assets/icon-192x192.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="assets/icon-192x192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="assets/icon-512x512.png">
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
+    
     <title>Electron Orbital Simulator</title>
     <script src="https://cdn.tailwindcss.com"></script>
    <!-- Three.js + OrbitControls, pinned to r128 and loaded in order -->
@@ -235,6 +249,19 @@
     </div>
 
     <script>
+        // Register Service Worker for PWA functionality
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then((registration) => {
+                        console.log('Service Worker registered successfully:', registration.scope);
+                    })
+                    .catch((error) => {
+                        console.log('Service Worker registration failed:', error);
+                    });
+            });
+        }
+
         window.onload = function() {
             // --- Scene Setup ---
             const scene = new THREE.Scene();
