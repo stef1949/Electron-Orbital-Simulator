@@ -1,2659 +1,350 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    
-    <!-- Primary SEO -->
-    <meta name="description" content="Interactive, high-performance visualiser for hydrogen-like electron orbitals.">
-    <link rel="canonical" href="https://stef1949.github.io/ElectronOrbitalVisualiser/">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <!-- Open Graph / Facebook / LinkedIn / Discord -->
-    <meta property="og:title" content="Electron Orbital Simulator">
-    <meta property="og:description" content="Interactive, high-performance visualiser for hydrogen-like electron orbitals with real spherical harmonics and multiple render modes.">
-    <meta property="og:type" content="website">
-    <meta property="og:url" content="https://stef1949.github.io/ElectronOrbitalVisualiser/">
-    <meta property="og:image" content="https://stef1949.github.io/ElectronOrbitalVisualiser/assets/orbital_screenshot.png">
-    <meta property="og:image:alt" content="Screenshot of Electron Orbital Simulator">
-    <meta property="og:locale" content="en_US">
-    <meta property="og:site_name" content="Electron Orbital Simulator">
+  <meta name="description" content="Interactive, high-performance visualiser for hydrogen-like electron orbitals.">
+  <link rel="canonical" href="https://stef1949.github.io/ElectronOrbitalVisualiser/">
 
-    <!-- Twitter Card -->
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Electron Orbital Simulator">
-    <meta name="twitter:description" content="Interactive, high-performance visualiser for hydrogen-like electron orbitals with real spherical harmonics and multiple render modes.">
-    <meta name="twitter:image" content="https://stef1949.github.io/ElectronOrbitalVisualiser/assets/orbital_screenshot.png">
-    <title>Electron Orbital Simulator</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-   <!-- Three.js + OrbitControls, pinned to r128 and loaded in order -->
-    <script defer src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            margin: 0;
-            padding: 0;
-            overflow: hidden;
-            background-color: #181818;
-            color: #f7f7f7;
-        }
-        #app-container {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            flex-direction: column;
-            padding: 1rem;
-        }
-        #canvas-container {
-            flex-grow: 1;
-            width: 100%;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            position: relative;
-        }
-        canvas {
-            display: block;
-            width: 100%;
-            height: 100%;
-        }
-        #orbital-panel {
-            position: absolute;
-            top: 50%;
-            right: 1rem;
-            transform: translateY(-50%);
-            padding: 0.5rem;
-            background-color: rgba(24, 24, 36, 0.5);
-            -webkit-backdrop-filter: blur(2px);
-            backdrop-filter: blur(2px);
-            border-radius: 0.75rem;
-            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.14);
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-            max-height: 80vh;
-            overflow: auto;
-            z-index: 12;
-        }
-        #settings-panel {
-            position: absolute;
-            bottom: 5rem;
-            left: 50%;
-            transform: translateX(-50%);
-            padding: 0.75rem 1rem;
-            background-color: rgba(30, 30, 46, 0.5);
-            -webkit-backdrop-filter: blur(2px);
-            backdrop-filter: blur(2px);
-            border-radius: 0.75rem;
-            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.14);
-            display: flex;
-            display: flex;
-            gap: 0.5rem;
-            align-items: center;
-            flex-wrap: wrap;
-            z-index: 10;
-        }
-        .orbital-button {
-            padding: 0.5rem 1rem;
-            background-color: #333333;
-            color: #fff;
-            border-radius: 0.5rem;
-            font-weight: bold;
-            text-align: center;
-            cursor: pointer;
-            transition: transform 0.2s, background-color 0.2s;
-            border: none;
-        }
-        .orbital-button:hover {
-            transform: translateY(-2px);
-            background-color: #a9a9a9;
-        }
-        .orbital-button:active {
-            transform: translateY(0);
-        }
-        .orbital-button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            background-color: #555555;
-        }
-        .orbital-button:disabled:hover {
-            transform: none;
-            background-color: #555555;
-        }
-        .slider-container {
-            display: flex;
-            flex-direction: column;
-            gap: 0.25rem;
-        }
-        .slider-container label {
-            font-size: 0.875rem;
-        }
-        #fps-counter {
-            position: absolute;
-            top: 1rem;
-            left: 1rem;
-            padding: 0.5rem 1rem;
-            background-color: rgba(30, 30, 46, 0.5);
-            -webkit-backdrop-filter: blur(2px);
-            backdrop-filter: blur(2px);
-            border-radius: 0.75rem;
-            font-size: 0.875rem;
-            border-radius: 0.75rem;
-            font-size: 0.875rem;
-            font-weight: bold;
-            color: #a0aec0;
-            z-index: 10;
-        }
-        /* Orientation overlay */
-        #orientation-overlay {
-            position: fixed;
-            left: 12px;
-            bottom: 12px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 0.4rem;
-            z-index: 20;
-            pointer-events: none; /* canvas non-interactive; buttons enabled individually */
-        }
-        #orientation-canvas {
-            width: 96px; height: 96px;
-            border-radius: 10px;
-            background: rgba(0,0,0,0.06);
-            box-shadow: 0 4px 10px rgba(0,0,0,0.25);
-        }
-        #orientation-buttons { display: flex; gap: 0.25rem; pointer-events: auto; }
-        .orient-btn { 
-            padding: 0.2rem 0.5rem; border: none; border-radius: 6px;
-            background: #333; color: #fff; font-weight: 700; font-size: 0.8rem; cursor: pointer;
-        }
-        .orient-btn:hover { background: #777; }
-        .orient-btn:active { transform: translateY(1px); }
-    </style>
+  <meta property="og:title" content="Electron Orbital Simulator">
+  <meta property="og:description" content="Interactive, high-performance visualiser for hydrogen-like electron orbitals with real spherical harmonics and multiple render modes.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://stef1949.github.io/ElectronOrbitalVisualiser/">
+  <meta property="og:image" content="https://stef1949.github.io/ElectronOrbitalVisualiser/assets/orbital_screenshot.png">
+  <meta property="og:image:alt" content="Screenshot of Electron Orbital Simulator">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:site_name" content="Electron Orbital Simulator">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Electron Orbital Simulator">
+  <meta name="twitter:description" content="Interactive, high-performance visualiser for hydrogen-like electron orbitals with real spherical harmonics and multiple render modes.">
+  <meta name="twitter:image" content="https://stef1949.github.io/ElectronOrbitalVisualiser/assets/orbital_screenshot.png">
+
+  <title>Electron Orbital Simulator</title>
+
+  <style>
+    :root {
+      color-scheme: dark;
+      --panel-bg: rgba(24, 24, 36, 0.58);
+      --panel-border: rgba(255, 255, 255, 0.08);
+      --text-dim: #a0aec0;
+      --button-bg: #333333;
+      --button-hover: #777777;
+      --button-active: #3e7bff;
+      --button-disabled: #555555;
+      --shadow: 0 6px 12px rgba(0, 0, 0, 0.14);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      margin: 0;
+      overflow: hidden;
+      background: radial-gradient(circle at top, #202437 0%, #16161d 55%, #0e1014 100%);
+      color: #f7f7f7;
+    }
+
+    #app-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 1rem;
+      gap: 0.5rem;
+    }
+
+    .app-title {
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 2.5rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      text-align: center;
+    }
+
+    .app-subtitle {
+      margin: 0 0 0.75rem;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: clamp(0.95rem, 1.8vw, 1.05rem);
+    }
+
+    #canvas-container {
+      position: relative;
+      width: 100%;
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #orbital-panel,
+    #settings-panel,
+    #fps-counter {
+      background-color: var(--panel-bg);
+      -webkit-backdrop-filter: blur(3px);
+      backdrop-filter: blur(3px);
+      border: 1px solid var(--panel-border);
+      box-shadow: var(--shadow);
+    }
+
+    #orbital-panel {
+      position: absolute;
+      top: 50%;
+      right: 1rem;
+      transform: translateY(-50%);
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      max-height: 80vh;
+      overflow: auto;
+      padding: 0.5rem;
+      border-radius: 0.75rem;
+      z-index: 12;
+    }
+
+    #settings-panel {
+      position: absolute;
+      bottom: 5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1rem;
+      border-radius: 0.75rem;
+      z-index: 10;
+      max-width: calc(100vw - 2rem);
+    }
+
+    .orbital-button {
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 0.5rem;
+      background-color: var(--button-bg);
+      color: #ffffff;
+      font-weight: 700;
+      text-align: center;
+      cursor: pointer;
+      transition: transform 0.2s, background-color 0.2s, box-shadow 0.2s;
+    }
+
+    .orbital-button:hover {
+      transform: translateY(-2px);
+      background-color: var(--button-hover);
+    }
+
+    .orbital-button:active {
+      transform: translateY(0);
+    }
+
+    .orbital-button.active {
+      background-color: var(--button-active);
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16);
+    }
+
+    .orbital-button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      background-color: var(--button-disabled);
+      transform: none;
+      box-shadow: none;
+    }
+
+    .slider-container {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      min-width: 13rem;
+    }
+
+    .slider-container label {
+      font-size: 0.875rem;
+    }
+
+    .separator {
+      width: 100%;
+      border: none;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      margin: 0.25rem 0;
+    }
+
+    #fps-counter {
+      position: absolute;
+      top: 1rem;
+      left: 1rem;
+      padding: 0.5rem 1rem;
+      border-radius: 0.75rem;
+      font-size: 0.875rem;
+      font-weight: 700;
+      color: var(--text-dim);
+      z-index: 10;
+    }
+
+    #orientation-overlay {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.4rem;
+      z-index: 20;
+      pointer-events: none;
+    }
+
+    #orientation-canvas {
+      width: 96px;
+      height: 96px;
+      border-radius: 10px;
+      background: rgba(0, 0, 0, 0.06);
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+    }
+
+    #orientation-buttons {
+      display: flex;
+      gap: 0.25rem;
+      pointer-events: auto;
+    }
+
+    .orient-btn {
+      padding: 0.2rem 0.5rem;
+      border: none;
+      border-radius: 6px;
+      background: #333333;
+      color: #ffffff;
+      font-weight: 700;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+
+    .orient-btn:hover {
+      background: #777777;
+    }
+
+    .orient-btn:active {
+      transform: translateY(1px);
+    }
+
+    @media (max-width: 900px) {
+      #orbital-panel {
+        top: auto;
+        bottom: 1rem;
+        right: 1rem;
+        transform: none;
+        max-height: 42vh;
+      }
+
+      #settings-panel {
+        bottom: 1rem;
+        left: 1rem;
+        right: 1rem;
+        transform: none;
+      }
+    }
+
+    @media (max-width: 640px) {
+      #app-container {
+        padding: 0.75rem;
+      }
+
+      #fps-counter {
+        top: 0.75rem;
+        left: 0.75rem;
+      }
+
+      #orbital-panel {
+        left: 0.75rem;
+        right: 0.75rem;
+        width: auto;
+      }
+
+      .orbital-button {
+        padding: 0.45rem 0.75rem;
+      }
+    }
+  </style>
 </head>
 <body>
+  <div id="app-container">
+    <h1 class="app-title">Electron Orbital Simulator</h1>
+    <p class="app-subtitle">Click and drag to rotate, use the scroll wheel to zoom.</p>
 
-    <div id="app-container">
-        <h1 class="text-3xl sm:text-4xl font-extrabold tracking-tight mb-4 text-center">Electron Orbital Simulator</h1>
-        <p class="text-sm sm:text-base text-gray-400 mb-6 text-center">Click and drag to rotate, use the scroll wheel to zoom.</p>
-        <div id="canvas-container">
-            <canvas id="orbital-canvas"></canvas>
-            <div id="orbital-panel">
-                <button class="orbital-button" data-orbital="1s">1s</button>
-                <button class="orbital-button" data-orbital="2s">2s</button>
-                <button class="orbital-button" data-orbital="3s">3s</button>
-                <hr style="width:100%;border:none;border-top:1px solid rgba(255,255,255,0.06);margin:6px 0;">
-                <button class="orbital-button" data-orbital="2p_x">2pₓ</button>
-                <button class="orbital-button" data-orbital="2p_y">2pᵧ</button>
-                <button class="orbital-button" data-orbital="2p_z">2p𝓏</button>
-                <button class="orbital-button" data-orbital="3p_x">3pₓ</button>
-                <button class="orbital-button" data-orbital="3p_y">3pᵧ</button>
-                <button class="orbital-button" data-orbital="3p_z">3p𝓏</button>
-                <hr style="width:100%;border:none;border-top:1px solid rgba(255,255,255,0.06);margin:6px 0;">
-                <button class="orbital-button" data-orbital="3d_z2">3d₂²</button>
-                <button class="orbital-button" data-orbital="3d_x2-y2">3dₓ²-ᵧ²</button>
-                <button class="orbital-button" data-orbital="3d_xy">3dₓᵧ</button>
-                <button class="orbital-button" data-orbital="3d_xz">3dₓ₂</button>
-                <button class="orbital-button" data-orbital="3d_yz">3dᵧ₂</button>
-                <hr style="width:100%;border:none;border-top:1px solid rgba(255,255,255,0.06);margin:6px 0;">
-                <button class="orbital-button" data-orbital="4s">4s</button>
-                <button class="orbital-button" data-orbital="4p_x">4pₓ</button>
-                <button class="orbital-button" data-orbital="4p_y">4pᵧ</button>
-                <button class="orbital-button" data-orbital="4p_z">4p𝓏</button>
-                <button class="orbital-button" data-orbital="4d_z2">4d₂²</button>
-                <button class="orbital-button" data-orbital="4d_x2-y2">4dₓ²-ᵧ²</button>
-                <button class="orbital-button" data-orbital="4d_xy">4dₓᵧ</button>
-                <button class="orbital-button" data-orbital="4d_xz">4dₓ₂</button>
-                <button class="orbital-button" data-orbital="4d_yz">4dᵧ₂</button>
-            </div>
+    <div id="canvas-container">
+      <canvas id="orbital-canvas" aria-label="Electron orbital visualization"></canvas>
 
-            <div id="settings-panel">
-                <div class="slider-container">
-                    <label for="density-slider">Density: <span id="density-value">50000</span> points</label>
-                    <input type="range" id="density-slider" min="10000" max="150000" value="50000" step="10000">
-                </div>
-                <button id="adaptive-toggle" class="orbital-button">Adaptive Off</button>
-                <button id="mode-toggle" class="orbital-button">Mode: Instanced</button>
-                <button id="impostor-toggle" class="orbital-button">Impostor: Off</button>
-                <button id="cull-toggle" class="orbital-button">Cull: Off</button>
-                <button id="pause-toggle" class="orbital-button">Pause</button>
-                <button id="clear-button" class="orbital-button">Clear</button>
-                <button id="screenshot-button" class="orbital-button">Save PNG</button>
-            </div>
-            <div id="fps-counter"> FPS:0 </div>
-            <div id="orientation-overlay">
-                <canvas id="orientation-canvas" width="140" height="140"></canvas>
-                <div id="orientation-buttons">
-                    <button id="snap-x" class="orient-btn">X</button>
-                    <button id="snap-y" class="orient-btn">Y</button>
-                    <button id="snap-z" class="orient-btn">Z</button>
-                    <button id="reset-orient" class="orient-btn">Reset</button>
-                </div>
-            </div>
+      <div id="orbital-panel" aria-label="Orbital selection">
+        <button class="orbital-button" data-orbital="1s" data-n="1" data-l="0" data-m="0" aria-label="1s orbital">1s</button>
+        <button class="orbital-button" data-orbital="2s" data-n="2" data-l="0" data-m="0" aria-label="2s orbital">2s</button>
+        <button class="orbital-button" data-orbital="3s" data-n="3" data-l="0" data-m="0" aria-label="3s orbital">3s</button>
+        <hr class="separator">
+        <button class="orbital-button" data-orbital="2p_x" data-n="2" data-l="1" data-m="1" aria-label="2p x orbital">2p<sub>x</sub></button>
+        <button class="orbital-button" data-orbital="2p_y" data-n="2" data-l="1" data-m="-1" aria-label="2p y orbital">2p<sub>y</sub></button>
+        <button class="orbital-button" data-orbital="2p_z" data-n="2" data-l="1" data-m="0" aria-label="2p z orbital">2p<sub>z</sub></button>
+        <button class="orbital-button" data-orbital="3p_x" data-n="3" data-l="1" data-m="1" aria-label="3p x orbital">3p<sub>x</sub></button>
+        <button class="orbital-button" data-orbital="3p_y" data-n="3" data-l="1" data-m="-1" aria-label="3p y orbital">3p<sub>y</sub></button>
+        <button class="orbital-button" data-orbital="3p_z" data-n="3" data-l="1" data-m="0" aria-label="3p z orbital">3p<sub>z</sub></button>
+        <hr class="separator">
+        <button class="orbital-button" data-orbital="3d_z2" data-n="3" data-l="2" data-m="0" aria-label="3d z squared orbital">3d<sub>z²</sub></button>
+        <button class="orbital-button" data-orbital="3d_x2-y2" data-n="3" data-l="2" data-m="2" aria-label="3d x squared minus y squared orbital">3d<sub>x²−y²</sub></button>
+        <button class="orbital-button" data-orbital="3d_xy" data-n="3" data-l="2" data-m="-2" aria-label="3d xy orbital">3d<sub>xy</sub></button>
+        <button class="orbital-button" data-orbital="3d_xz" data-n="3" data-l="2" data-m="1" aria-label="3d xz orbital">3d<sub>xz</sub></button>
+        <button class="orbital-button" data-orbital="3d_yz" data-n="3" data-l="2" data-m="-1" aria-label="3d yz orbital">3d<sub>yz</sub></button>
+        <hr class="separator">
+        <button class="orbital-button" data-orbital="4s" data-n="4" data-l="0" data-m="0" aria-label="4s orbital">4s</button>
+        <button class="orbital-button" data-orbital="4p_x" data-n="4" data-l="1" data-m="1" aria-label="4p x orbital">4p<sub>x</sub></button>
+        <button class="orbital-button" data-orbital="4p_y" data-n="4" data-l="1" data-m="-1" aria-label="4p y orbital">4p<sub>y</sub></button>
+        <button class="orbital-button" data-orbital="4p_z" data-n="4" data-l="1" data-m="0" aria-label="4p z orbital">4p<sub>z</sub></button>
+        <button class="orbital-button" data-orbital="4d_z2" data-n="4" data-l="2" data-m="0" aria-label="4d z squared orbital">4d<sub>z²</sub></button>
+        <button class="orbital-button" data-orbital="4d_x2-y2" data-n="4" data-l="2" data-m="2" aria-label="4d x squared minus y squared orbital">4d<sub>x²−y²</sub></button>
+        <button class="orbital-button" data-orbital="4d_xy" data-n="4" data-l="2" data-m="-2" aria-label="4d xy orbital">4d<sub>xy</sub></button>
+        <button class="orbital-button" data-orbital="4d_xz" data-n="4" data-l="2" data-m="1" aria-label="4d xz orbital">4d<sub>xz</sub></button>
+        <button class="orbital-button" data-orbital="4d_yz" data-n="4" data-l="2" data-m="-1" aria-label="4d yz orbital">4d<sub>yz</sub></button>
+      </div>
+
+      <div id="settings-panel">
+        <div class="slider-container">
+          <label for="density-slider">Density: <span id="density-value">50000</span> points</label>
+          <input type="range" id="density-slider" min="10000" max="150000" value="50000" step="10000">
         </div>
+        <button id="adaptive-toggle" class="orbital-button">Adaptive Off</button>
+        <button id="mode-toggle" class="orbital-button">Mode: Instanced</button>
+        <button id="impostor-toggle" class="orbital-button">Impostor: Off</button>
+        <button id="cull-toggle" class="orbital-button">Cull: Off</button>
+        <button id="pause-toggle" class="orbital-button">Pause</button>
+        <button id="clear-button" class="orbital-button">Clear</button>
+        <button id="screenshot-button" class="orbital-button">Save PNG</button>
+      </div>
+
+      <div id="fps-counter">FPS: 0</div>
+
+      <div id="orientation-overlay">
+        <canvas id="orientation-canvas" width="140" height="140" aria-label="Orientation overlay"></canvas>
+        <div id="orientation-buttons">
+          <button id="snap-x" class="orient-btn" type="button">X</button>
+          <button id="snap-y" class="orient-btn" type="button">Y</button>
+          <button id="snap-z" class="orient-btn" type="button">Z</button>
+          <button id="reset-orient" class="orient-btn" type="button">Reset</button>
+        </div>
+      </div>
     </div>
-
-    <script>
-        window.onload = function() {
-            // --- Scene Setup ---
-            const scene = new THREE.Scene();
-            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            
-            // Request a WebGL2 rendering context
-            const canvas = document.getElementById('orbital-canvas');
-            const context = canvas.getContext('webgl2');
-
-            // Initialize the renderer with the WebGL2 context
-            const renderer = new THREE.WebGLRenderer({
-                canvas: canvas,
-                context: context,
-                alpha: true,
-                preserveDrawingBuffer: true // allow canvas.toDataURL() to produce a valid screenshot
-            });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-
-            // Set camera position and controls
-            camera.position.z = 20;
-            const controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-            controls.dampingFactor = 0.25;
-            controls.enableZoom = true;
-
-            // --- Lighting ---
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-            scene.add(ambientLight);
-            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
-            directionalLight.position.set(0, 1, 1);
-            scene.add(directionalLight);
-
-            // --- Orientation overlay (bottom-right) ---
-            const orientCanvas = document.getElementById('orientation-canvas');
-            const orientRenderer = new THREE.WebGLRenderer({ canvas: orientCanvas, alpha: true, antialias: true });
-            orientRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-            // Physical buffer size kept small for perf; CSS scales presentation
-            orientRenderer.setSize(140, 140, false);
-            const orientScene = new THREE.Scene();
-            const orientCam = new THREE.PerspectiveCamera(70, 1, 0.1, 20);
-            orientCam.position.set(0, 0, 2.4);
-            // Build a thicker axes gizmo (mesh-based) so it renders bold on WebGL
-            function buildThickAxes(length = 1.3, radius = 0.06, headLength = 0.24, headRadius = 0.12) {
-                const group = new THREE.Group();
-                const segs = 16;
-                function makeAxis(color, axis) {
-                    const shaftLen = Math.max(0.001, length - headLength);
-                    const mat = new THREE.MeshBasicMaterial({ color, toneMapped: false });
-                    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, shaftLen, segs), mat);
-                    const head = new THREE.Mesh(new THREE.ConeGeometry(headRadius, headLength, segs), mat);
-                    if (axis === 'x') {
-                        shaft.rotation.z = Math.PI / 2; shaft.position.x = shaftLen / 2;
-                        head.rotation.z = Math.PI / 2; head.position.x = shaftLen + headLength / 2;
-                    } else if (axis === 'y') {
-                        shaft.position.y = shaftLen / 2;
-                        head.position.y = shaftLen + headLength / 2;
-                    } else { // 'z'
-                        shaft.rotation.x = -Math.PI / 2; shaft.position.z = shaftLen / 2;
-                        head.rotation.x = -Math.PI / 2; head.position.z = shaftLen + headLength / 2;
-                    }
-                    const g = new THREE.Group(); g.add(shaft); g.add(head); return g;
-                }
-                group.add(makeAxis(0xff5555, 'x'));
-                group.add(makeAxis(0x55ff55, 'y'));
-                group.add(makeAxis(0x5588ff, 'z'));
-                return group;
-            }
-            const axesRoot = new THREE.Object3D();
-            axesRoot.add(buildThickAxes(1.35, 0.07, 0.28, 0.14));
-            orientScene.add(axesRoot);
-
-            // --- Orbital Visualization ---
-            let currentOrbital = null;
-            let currentOrbitalData = { n: 2, l: 1, m: -1 }; // Track the current orbital
-            let debounceTimer = null; // debounce handle
-            let paused = false; // controls per-frame resampling
-            let adaptiveEnabled = false; // adaptive sampling toggle
-            let adaptiveFrame = 0; // frame counter for adaptive updates
-            let cachedMaxPsi2 = null; // reused across frames in adaptive mode
-            let emaMaxPsi2 = null; // exponential moving average for maxPsi2
-            const ADAPTIVE_MAX_RECALC_INTERVAL = 15; // frames
-            const ADAPTIVE_TARGET_ACCEPT = 0.28; // target acceptance ratio
-            const ADAPTIVE_BASE_ATTEMPTS_FACTOR = 6; // attempts per instance baseline
-            const SUBSET_RESAMPLE_FRACTION = 0.05; // fraction of instances updated per adaptive frame
-            const EMA_ALPHA = 0.25; // smoothing factor for maxPsi2
-            let renderMode = 'webgpu'; // 'instanced', 'points', 'gpu' (WebGL sampling), 'webgpu'
-            // renderMode can also be 'gpu' for GPU-based sampling + point-cloud shader
-            let occlusionEnabled = false; // toggles depth-based occlusion culling
-            let impostorEnabled = false; // toggles impostor rendering for instanced mode (billboard quads instead of spheres)
-            // Points mode reusable buffers
-            let pointsCache = { geometry: null, material: null, capacity: 0 };
-            const maxRadius = 40;
-            const colorPositive = new THREE.Color(0x2e64e1); // A vibrant blue
-            const colorNegative = new THREE.Color(0xff6666); // A vibrant red
-            const ACCEPTANCE_SCALE = 130; // Acceptance probability scale factor
-            const dummyObject3D = new THREE.Object3D(); // For instanced transforms
-
-            // --- WebGPU mode (independent of Three.js) ---
-            let webgpuSupported = !!navigator.gpu;
-            let webgpu = {
-                initialized: false,
-                device: null,
-                context: null,
-                canvas: null,
-                format: null,
-                pipeline: null,
-                computePipeline: null,
-                uniformBuffer: null,
-                computeUniformBuffer: null,
-                particleBuffer: null,
-                invRBuffer: null,
-                invThetaBuffer: null,
-                invPhiBuffer: null,
-                rngStateBuffer: null,
-                bindGroup: null,
-                computeBindGroup: null,
-                sampleData: null,
-                numPoints: 0,
-                uniforms: { projection: new Float32Array(16), view: new Float32Array(16), pointSize: 0.08 },
-                _uniformStaging: new Float32Array(16 + 16 + 4),
-                _computeStaging: new ArrayBuffer(64), // for Params struct
-                camera: { distance: 80, yaw: 0.8, pitch: 0.6, dragging: false, lastX:0, lastY:0 }
-            };
-
-            function mat4Perspective(out, fovy, aspect, near, far) {
-                const f = 1.0 / Math.tan(fovy / 2);
-                out[0]=f/aspect; out[1]=0; out[2]=0; out[3]=0;
-                out[4]=0; out[5]=f; out[6]=0; out[7]=0;
-                out[8]=0; out[9]=0; out[10]=(far+near)/(near-far); out[11]=-1;
-                out[12]=0; out[13]=0; out[14]=(2*far*near)/(near-far); out[15]=1;
-            }
-            function mat4LookAt(out, eye, center, up) {
-                let zx = eye[0]-center[0], zy = eye[1]-center[1], zz = eye[2]-center[2];
-                let len = Math.hypot(zx,zy,zz); zx/=len; zy/=len; zz/=len; // z axis
-                let xx = up[1]*zz - up[2]*zy;
-                let xy = up[2]*zx - up[0]*zz;
-                let xz = up[0]*zy - up[1]*zx;
-                len = Math.hypot(xx,xy,xz); if(len){xx/=len;xy/=len;xz/=len;}
-                let yx = zy*xz - zz*xy;
-                let yy = zz*xx - zx*xz;
-                let yz = zx*xy - zy*xx;
-                out[0]=xx; out[1]=yx; out[2]=zx; out[3]=0;
-                out[4]=xy; out[5]=yy; out[6]=zy; out[7]=0;
-                out[8]=xz; out[9]=yz; out[10]=zz; out[11]=0;
-                out[12]=-(xx*eye[0]+xy*eye[1]+xz*eye[2]);
-                out[13]=-(yx*eye[0]+yy*eye[1]+yz*eye[2]);
-                out[14]=-(zx*eye[0]+zy*eye[1]+zz*eye[2]);
-                out[15]=1;
-            }
-            function updateWebGPUCamera() {
-                const c = webgpu.camera;
-                const x = c.distance * Math.sin(c.yaw) * Math.cos(c.pitch);
-                const y = c.distance * Math.sin(c.pitch);
-                const z = c.distance * Math.cos(c.yaw) * Math.cos(c.pitch);
-                mat4LookAt(webgpu.uniforms.view, [x,y,z], [0,0,0], [0,1,0]);
-            }
-            async function initWebGPU() {
-                if (!webgpuSupported) { console.warn('WebGPU not supported'); return false; }
-                if (webgpu.initialized) return true;
-                webgpu.canvas = document.createElement('canvas');
-                webgpu.canvas.id = 'webgpu-canvas';
-                webgpu.canvas.style.position='absolute';
-                webgpu.canvas.style.top='0';
-                webgpu.canvas.style.left='0';
-                webgpu.canvas.style.width='100%';
-                webgpu.canvas.style.height='100%';
-                webgpu.canvas.style.zIndex='5';
-                document.getElementById('canvas-container').appendChild(webgpu.canvas);
-                try {
-                    const adapter = await navigator.gpu.requestAdapter();
-                    if(!adapter){ console.warn('No WebGPU adapter'); return false; }
-                    const device = await adapter.requestDevice();
-                    const ctx = webgpu.canvas.getContext('webgpu');
-                    const format = navigator.gpu.getPreferredCanvasFormat();
-                    ctx.configure({ device, format, alphaMode:'premultiplied'});
-                    webgpu.device = device; webgpu.context = ctx; webgpu.format = format;
-                } catch (e) { console.warn('WebGPU init failed', e); return false; }
-                // Uniform buffer (projection + view + pointSize vec4)
-                webgpu.uniformBuffer = webgpu.device.createBuffer({ size: (16+16+4)*4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-                const shader = `
-struct Particle { pos: vec4<f32>, };
-struct Uniforms { projection: mat4x4<f32>, view: mat4x4<f32>, pointSize: vec4<f32>, };
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(0) @binding(1) var<storage, read> particles: array<Particle>;
-
-struct VSOut {
-  @builtin(position) position: vec4<f32>,
-  @location(0) color: vec3<f32>,
-  @location(1) alpha: f32,
-};
-
-@vertex fn vs(@builtin(instance_index) inst: u32, @builtin(vertex_index) vid: u32) -> VSOut {
-  var out: VSOut;
-  let p = particles[inst].pos;
-  let quad = array<vec2<f32>,4>(
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>( 1.0, -1.0),
-    vec2<f32>(-1.0,  1.0),
-    vec2<f32>( 1.0,  1.0)
-  );
-  let wpos = uniforms.view * vec4<f32>(p.xyz, 1.0);
-  var clip = uniforms.projection * wpos;
-  let size = uniforms.pointSize.x;
-  let offs = quad[vid] * size * (20.0 / max(0.1, -wpos.z));
-  let xy = clip.xy + offs;
-  clip = vec4<f32>(xy, clip.zw);
-  out.position = clip;
-  let colorPos = vec3<f32>(0.18, 0.39, 0.88);
-  let colorNeg = vec3<f32>(1.0, 0.4, 0.4);
-  out.color = select(colorNeg, colorPos, p.w >= 0.0);
-  out.alpha = 0.65;
-  return out;
-}
-
-struct FSIn {
-  @location(0) color: vec3<f32>,
-  @location(1) alpha: f32,
-};
-
-@fragment fn fs(in: FSIn) -> @location(0) vec4<f32> {
-  return vec4<f32>(in.color, in.alpha);
-}`;
-                webgpu.pipeline = webgpu.device.createRenderPipeline({
-                    layout: 'auto',
-                    vertex: { module: webgpu.device.createShaderModule({ code: shader }), entryPoint: 'vs' },
-                    fragment: { module: webgpu.device.createShaderModule({ code: shader }), entryPoint:'fs', targets:[{ format: webgpu.format, blend:{ color:{srcFactor:'one',dstFactor:'one'}, alpha:{srcFactor:'one',dstFactor:'one'} } }] },
-                    primitive: { topology:'triangle-strip' }
-                });
-
-                // Compute shader generates samples entirely on GPU and advances RNG states
-                const computeWGSL = `
-struct Particle { pos: vec4<f32>, };
-struct Params {
-  radialSize: u32,
-  thetaSize: u32,
-  phiSize: u32,
-  numPoints: u32,
-  seed: u32,
-  frame: u32,
-  _pad: u32,
-  maxRadius: f32,
-  l: f32,
-  m: f32,
-  n: f32,
-};
-
-@group(0) @binding(0) var<storage, read> invR: array<f32>;
-@group(0) @binding(1) var<storage, read> invTheta: array<f32>;
-@group(0) @binding(2) var<storage, read> invPhi: array<f32>;
-@group(0) @binding(3) var<storage, read_write> rngStates: array<u32>;
-@group(0) @binding(4) var<storage, read_write> particles: array<Particle>;
-@group(0) @binding(5) var<uniform> params: Params;
-
-fn lcg(n: u32) -> u32 { return n * 1664525u + 1013904223u; }
-fn xs32(x: u32) -> u32 {
-  var v = x;
-  v = v ^ (v << 13u);
-  v = v ^ (v >> 17u);
-  v = v ^ (v << 5u);
-  return v;
-}
-fn rand01(n: ptr<function, u32>) -> f32 {
-  (*n) = xs32(lcg(*n));
-  return f32((*n) & 16777215u) / 16777216.0;
-}
-
-// invR/invTheta are RGBA-packed; use R component at index*4
-fn sample1D_R(size: u32, u: f32) -> f32 {
-  let x = clamp(u, 0.0, 1.0) * f32(max(1u, size) - 1u);
-  let i0 = u32(floor(x));
-  let i1 = min(i0 + 1u, max(1u, size) - 1u);
-  let t = x - f32(i0);
-  let a = invR[i0 * 4u];
-  let b = invR[i1 * 4u];
-  return mix(a, b, t);
-}
-fn sample1D_T(size: u32, u: f32) -> f32 {
-  let x = clamp(u, 0.0, 1.0) * f32(max(1u, size) - 1u);
-  let i0 = u32(floor(x));
-  let i1 = min(i0 + 1u, max(1u, size) - 1u);
-  let t = x - f32(i0);
-  let a = invTheta[i0 * 4u];
-  let b = invTheta[i1 * 4u];
-  return mix(a, b, t);
-}
-fn samplePhi(row: u32, u: f32) -> f32 {
-  let size = params.phiSize;
-  let base = row * size * 4u;
-  let x = clamp(u, 0.0, 1.0) * f32(max(1u, size) - 1u);
-  let j0 = u32(floor(x));
-  let j1 = min(j0 + 1u, max(1u, size) - 1u);
-  let t = x - f32(j0);
-  let a = invPhi[base + j0 * 4u];
-  let b = invPhi[base + j1 * 4u];
-  return mix(a, b, t);
-}
-
-fn fact(n:i32)->f32{ var f:f32=1.0; for(var i:i32=2;i<=8;i=i+1){ if(i>n){break;} f=f*f32(i);} return f; }
-fn assocP(l:i32, m:i32, x:f32)->f32{
-  var pmm:f32 = 1.0;
-  if (m>0) {
-    let somx2 = sqrt(max(0.0, 1.0 - x*x));
-    var odd:f32 = 1.0;
-    for (var i:i32=1; i<=8; i=i+1) { if (i>m) { break; } odd = odd * f32(2*i - 1); }
-    let sign = select(-1.0, 1.0, (m & 1) == 0);
-    pmm = sign * odd * pow(somx2, f32(m));
-  }
-  if (l==m) { return pmm; }
-  var pmmp1:f32 = x * f32(2*m + 1) * pmm;
-  if (l==m+1) { return pmmp1; }
-  var pmmPrev:f32 = pmm; var pmml:f32 = pmmp1; var pll:f32 = 0.0;
-  for (var L:i32=m+2; L<=8; L=L+1) {
-    if (L>l) { break; }
-    pll = ((f32(2*L-1))*x*pmml - f32(L+m-1)*pmmPrev) / f32(L-m);
-    pmmPrev = pmml; pmml = pll;
-  }
-  return pmml;
-}
-fn getAngular(theta: f32, phi: f32, l: f32, m: f32) -> f32 {
-  let PI:f32 = 3.141592653589793;
-  let li:i32 = i32(l + 0.5);
-  let mi:i32 = i32(abs(m) + 0.5);
-  let x = cos(theta);
-  let Plm = assocP(li, mi, x);
-  let norm = sqrt(((2.0*f32(li)+1.0)/(4.0*PI)) * (fact(li-mi) / max(1.0, fact(li+mi))));
-  if (mi==0) { return norm * Plm; }
-  let base = sqrt(2.0) * norm * Plm;
-  return select(base * sin(f32(mi)*phi), base * cos(f32(mi)*phi), m > 0.0);
-}
-
-@compute @workgroup_size(256)
-fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let id = gid.x;
-  if (id >= params.numPoints) { return; }
-  var state = rngStates[id];
-  if (state == 0u) { state = lcg(id ^ params.seed ^ params.frame); }
-  // u1,u2,u3 in [0,1)
-  let u1 = rand01(&state);
-  let u2 = rand01(&state);
-  let u3 = rand01(&state);
-
-  // radius, theta, phi via inverse CDF tables
-  let rNorm = sample1D_R(params.radialSize, u1);
-  let r = rNorm * params.maxRadius;
-  let tNorm = sample1D_T(params.thetaSize, u2);
-  let theta = tNorm * 3.14159265;
-  let rowf = clamp(tNorm * f32(params.thetaSize - 1u), 0.0, f32(params.thetaSize - 1u));
-  let row0 = u32(floor(rowf));
-  let row1 = min(params.thetaSize - 1u, row0 + 1u);
-  let fr = rowf - f32(row0);
-  let p0 = samplePhi(row0, u3);
-  let p1 = samplePhi(row1, u3);
-  let pNorm = mix(p0, p1, fr);
-  let phi = pNorm * 6.2831853;
-
-  let st = sin(theta);
-  let ct = cos(theta);
-  let x = r * st * cos(phi);
-  let y = r * st * sin(phi);
-  let z = r * ct;
-  // Include radial phase (sign) via associated Laguerre, to match real hydrogenic wavefunction phase
-  let rho = 2.0 * r / params.n;
-  let alpha = 2.0 * params.l + 1.0;
-  // Recurrence for L_p^alpha(rho)
-  let pInt: u32 = u32(max(0.0, params.n - params.l - 1.0));
-  var Lkm2: f32 = 1.0;
-  var Lkm1: f32 = -rho + alpha + 1.0;
-  if (pInt == 0u) { Lkm1 = 1.0; }
-  else if (pInt == 1u) { /* Lkm1 already set */ }
-  else {
-    for (var k:u32=2u; k<=pInt; k=k+1u) {
-      let a = (2.0* f32(k-1u) + alpha + 1.0 - rho) * Lkm1;
-      let b = (f32(k-1u) + alpha) * Lkm2;
-      let Lk = (a - b) / f32(k);
-      Lkm2 = Lkm1; Lkm1 = Lk;
-    }
-  }
-  let signR = select(-1.0, 1.0, Lkm1 >= 0.0);
-  let psi = signR * getAngular(theta, phi, params.l, params.m);
-  particles[id].pos = vec4<f32>(x, y, z, psi);
-  rngStates[id] = state;
-}`;
-                webgpu.computePipeline = webgpu.device.createComputePipeline({
-                    layout: 'auto',
-                    compute: { module: webgpu.device.createShaderModule({ code: computeWGSL }), entryPoint: 'cs' }
-                });
-
-                // Compute uniforms buffer
-                webgpu.computeUniformBuffer = webgpu.device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-                // Interaction
-                webgpu.canvas.addEventListener('mousedown', e=>{ webgpu.camera.dragging=true; webgpu.camera.lastX=e.clientX; webgpu.camera.lastY=e.clientY; });
-                window.addEventListener('mouseup', ()=> webgpu.camera.dragging=false);
-                window.addEventListener('mousemove', e=>{ if(!webgpu.camera.dragging) return; const dx=(e.clientX-webgpu.camera.lastX)*0.005; const dy=(e.clientY-webgpu.camera.lastY)*0.005; webgpu.camera.yaw+=dx; webgpu.camera.pitch=Math.max(-1.2, Math.min(1.2, webgpu.camera.pitch+dy)); webgpu.camera.lastX=e.clientX; webgpu.camera.lastY=e.clientY; });
-                webgpu.canvas.addEventListener('wheel', e=>{ webgpu.camera.distance = Math.max(2, Math.min(60, webgpu.camera.distance + e.deltaY*0.01)); });
-                webgpu.initialized = true;
-                return true;
-            }
-            // Importance-sampled CPU generator using cached inverse-CDF tables
-            function generateOrbitalSamplesCPU_WebGPU(n,l,m,numPoints) {
-                const data = new Float32Array(numPoints * 4);
-                // Ensure LUTs/tables exist
-                const rk = `${n}_${l}`;
-                if (!radialCache[rk]) {
-                    const radTex = createRadialLUT(n, l, 1024);
-                    radialCache[rk] = {
-                        radial: radTex,
-                        invCdf: createRadialInvCDF(n, l, 1024),
-                        maxR: radTex._maxRabs || 1
-                    };
-                }
-                const ak = `${l}_${m}`;
-                if (!angularCache[ak]) {
-                    angularCache[ak] = createAngularInvTables(l, m, 256, 256);
-                }
-                const invR = radialCache[rk].invCdf._cpuArray; // normalized r in R channel
-                const rSize = radialCache[rk].invCdf.image.width;
-                const invTheta = angularCache[ak].invThetaData; // normalized theta in [0,1]
-                const thetaSize = angularCache[ak].thetaSize;
-                const invPhi = angularCache[ak].invPhiData; // normalized phi per theta row
-                const phiSize = angularCache[ak].phiSize;
-                function sample1D(arr, size, u) {
-                    const x = u * (size - 1);
-                    const i0 = Math.max(0, Math.min(size - 1, Math.floor(x)));
-                    const i1 = Math.min(size - 1, i0 + 1);
-                    const t = x - i0;
-                    const a = arr[i0 * 4];
-                    const b = arr[i1 * 4];
-                    return a + (b - a) * t;
-                }
-                function samplePhiRow(arr, thetaIndex, u) {
-                    const base = thetaIndex * phiSize * 4;
-                    const x = u * (phiSize - 1);
-                    const j0 = Math.max(0, Math.min(phiSize - 1, Math.floor(x)));
-                    const j1 = Math.min(phiSize - 1, j0 + 1);
-                    const t = x - j0;
-                    const a = arr[base + j0 * 4];
-                    const b = arr[base + j1 * 4];
-                    return a + (b - a) * t;
-                }
-                for (let i = 0; i < numPoints; i++) {
-                    const u1 = Math.random();
-                    const u2 = Math.random();
-                    const u3 = Math.random();
-                    const rNorm = sample1D(invR, rSize, u1);
-                    const r = rNorm * maxRadius;
-                    const thetaNorm = sample1D(invTheta, thetaSize, u2);
-                    const theta = thetaNorm * Math.PI;
-                    const row = Math.min(thetaSize - 1, Math.floor(thetaNorm * (thetaSize - 1)));
-                    const phiNorm = samplePhiRow(invPhi, row, u3);
-                    const phi = phiNorm * 2 * Math.PI;
-                    const sinTheta = Math.sin(theta);
-                    const x = r * sinTheta * Math.cos(phi);
-                    const y = r * sinTheta * Math.sin(phi);
-                    const z = r * Math.cos(theta);
-                    const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
-                    const o = i * 4; data[o] = x; data[o + 1] = y; data[o + 2] = z; data[o + 3] = psi;
-                }
-                return data;
-            }
-            function ensureWebGPUParticles() {
-                if (renderMode !== 'webgpu' || !webgpu.initialized) return;
-                const { n,l,m } = currentOrbitalData;
-                const numPoints = parseInt(densitySlider.value);
-                if (webgpu.numPoints !== numPoints) {
-                    webgpu.numPoints = numPoints;
-                }
-                // Ensure sampling tables exist and are on GPU
-                const rk = `${n}_${l}`;
-                if (!radialCache[rk]) {
-                    const radTex = createRadialLUT(n, l, 1024);
-                    radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n, l, 1024), maxR: radTex._maxRabs || 1 };
-                }
-                const ak = `${l}_${m}`;
-                if (!angularCache[ak]) {
-                    angularCache[ak] = createAngularInvTables(l, m, 256, 256);
-                }
-                const invR = radialCache[rk].invCdf._cpuArray;
-                const rSize = radialCache[rk].invCdf.image.width;
-                const invT = angularCache[ak].invThetaData;
-                const tSize = angularCache[ak].thetaSize;
-                const invP = angularCache[ak].invPhiData;
-                const pSize = angularCache[ak].phiSize;
-
-                // Upload or resize GPU buffers as needed
-                const device = webgpu.device;
-                const BYTES = 4;
-                const invRBytes = rSize * 4 * BYTES;
-                if (!webgpu.invRBuffer || webgpu._invRBytes !== invRBytes) {
-                    webgpu.invRBuffer?.destroy?.();
-                    webgpu.invRBuffer = device.createBuffer({ size: invRBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-                    webgpu._invRBytes = invRBytes;
-                }
-                device.queue.writeBuffer(webgpu.invRBuffer, 0, invR);
-                const invTBytes = tSize * 4 * BYTES;
-                if (!webgpu.invThetaBuffer || webgpu._invThetaBytes !== invTBytes) {
-                    webgpu.invThetaBuffer?.destroy?.();
-                    webgpu.invThetaBuffer = device.createBuffer({ size: invTBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-                    webgpu._invThetaBytes = invTBytes;
-                }
-                device.queue.writeBuffer(webgpu.invThetaBuffer, 0, invT);
-                const invPhiBytes = tSize * pSize * 4 * BYTES;
-                if (!webgpu.invPhiBuffer || webgpu._invPhiBytes !== invPhiBytes) {
-                    webgpu.invPhiBuffer?.destroy?.();
-                    webgpu.invPhiBuffer = device.createBuffer({ size: invPhiBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-                    webgpu._invPhiBytes = invPhiBytes;
-                }
-                device.queue.writeBuffer(webgpu.invPhiBuffer, 0, invP);
-
-                // Ensure particle and RNG buffers
-                const particleBytes = numPoints * 4 * BYTES;
-                if (!webgpu.particleBuffer || webgpu._particleBytes !== particleBytes) {
-                    webgpu.particleBuffer?.destroy?.();
-                    webgpu.particleBuffer = device.createBuffer({ size: particleBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-                    webgpu._particleBytes = particleBytes;
-                }
-                const rngBytes = numPoints * BYTES;
-                if (!webgpu.rngStateBuffer || webgpu._rngBytes !== rngBytes) {
-                    webgpu.rngStateBuffer?.destroy?.();
-                    webgpu.rngStateBuffer = device.createBuffer({ size: rngBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-                    webgpu._rngBytes = rngBytes;
-                    // zero-initialize seeds; compute will hash based on id+seed
-                    device.queue.writeBuffer(webgpu.rngStateBuffer, 0, new Uint32Array(numPoints));
-                }
-
-                // Bind groups for render and compute
-                webgpu.bindGroup = device.createBindGroup({ layout: webgpu.pipeline.getBindGroupLayout(0), entries:[
-                    { binding:0, resource:{ buffer: webgpu.uniformBuffer } },
-                    { binding:1, resource:{ buffer: webgpu.particleBuffer } }
-                ]});
-                webgpu.computeBindGroup = device.createBindGroup({ layout: webgpu.computePipeline.getBindGroupLayout(0), entries:[
-                    { binding:0, resource:{ buffer: webgpu.invRBuffer } },
-                    { binding:1, resource:{ buffer: webgpu.invThetaBuffer } },
-                    { binding:2, resource:{ buffer: webgpu.invPhiBuffer } },
-                    { binding:3, resource:{ buffer: webgpu.rngStateBuffer } },
-                    { binding:4, resource:{ buffer: webgpu.particleBuffer } },
-                    { binding:5, resource:{ buffer: webgpu.computeUniformBuffer } }
-                ]});
-            }
-            function renderWebGPUFrame() {
-                if (renderMode !== 'webgpu' || !webgpu.initialized) return;
-                const device = webgpu.device;
-                const canvas = webgpu.canvas;
-                // Gate DPR for high densities
-                const HIGH_DENSITY_THRESHOLD = 60000;
-                const MAX_DPR_HIGH = 1.25;
-                const dpr = (webgpu.numPoints > HIGH_DENSITY_THRESHOLD) ? MAX_DPR_HIGH : window.devicePixelRatio;
-                const w = Math.floor(canvas.clientWidth * dpr);
-                const h = Math.floor(canvas.clientHeight * dpr);
-                if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-                mat4Perspective(webgpu.uniforms.projection, camera.fov * Math.PI/180, w/h, 0.1, 1000);
-                updateWebGPUCamera();
-                const u = webgpu._uniformStaging;
-                u.set(webgpu.uniforms.projection, 0);
-                u.set(webgpu.uniforms.view, 16);
-                u[32] = webgpu.uniforms.pointSize;
-                device.queue.writeBuffer(webgpu.uniformBuffer, 0, u.buffer);
-                ensureWebGPUParticles();
-                // Update compute uniforms (sizes, seed, frame, maxRadius, l,m)
-                const rk = `${currentOrbitalData.n}_${currentOrbitalData.l}`;
-                const ak = `${currentOrbitalData.l}_${currentOrbitalData.m}`;
-                const rSize = radialCache[rk].invCdf.image.width >>> 0;
-                const tSize = angularCache[ak].thetaSize >>> 0;
-                const pSize = angularCache[ak].phiSize >>> 0;
-                const paramsBuf = new DataView(webgpu._computeStaging);
-                paramsBuf.setUint32(0, rSize, true);
-                paramsBuf.setUint32(4, tSize, true);
-                paramsBuf.setUint32(8, pSize, true);
-                paramsBuf.setUint32(12, webgpu.numPoints >>> 0, true);
-                // Persisted RNG base seed (set once at init)
-                if (!webgpu.rngSeed) webgpu.rngSeed = ((Math.random() * 1e9) | 0) >>> 0;
-                paramsBuf.setUint32(16, webgpu.rngSeed >>> 0, true);
-                paramsBuf.setUint32(20, (adaptiveFrame | 0) >>> 0, true);
-                paramsBuf.setUint32(24, 0, true);
-                paramsBuf.setFloat32(28, maxRadius, true);
-                paramsBuf.setFloat32(32, currentOrbitalData.l, true);
-                paramsBuf.setFloat32(36, currentOrbitalData.m, true);
-                paramsBuf.setFloat32(40, currentOrbitalData.n, true);
-                device.queue.writeBuffer(webgpu.computeUniformBuffer, 0, webgpu._computeStaging);
-
-                const encoder = device.createCommandEncoder();
-                // Compute pass to generate/update samples fully on GPU
-                const cpass = encoder.beginComputePass();
-                cpass.setPipeline(webgpu.computePipeline);
-                cpass.setBindGroup(0, webgpu.computeBindGroup);
-                const wgSize = 256;
-                const numWG = Math.ceil(webgpu.numPoints / wgSize);
-                cpass.dispatchWorkgroups(numWG);
-                cpass.end();
-                const pass = encoder.beginRenderPass({ colorAttachments:[{ view: webgpu.context.getCurrentTexture().createView(), loadOp:'clear', storeOp:'store', clearValue:{r:0,g:0,b:0,a:0} }] });
-                pass.setPipeline(webgpu.pipeline);
-                pass.setBindGroup(0, webgpu.bindGroup);
-                pass.draw(4, webgpu.numPoints, 0, 0);
-                pass.end();
-                device.queue.submit([encoder.finish()]);
-            }
-
-            // --- GPU sampling resources (WebGL2) ---
-            let gpuSampleTarget = null; // render target where samples are written (RGBA32F)
-            let gpuSampleMesh = null; // points mesh that reads from the render target
-            let gpuQuadScene = null; // scene used to render sampling quad
-            let gpuRadialLUT = null; // DataTexture (1D) for radial lookup
-            let gpuLUTSize = 0;
-            // Cache per (n,l): { radial: DataTexture, invCdf: DataTexture }
-            const radialCache = {};
-            // Cache per (l,m): { invTheta: DataTexture, invPhi: DataTexture, thetaSize: number, phiSize: number }
-            const angularCache = {};
-            let gpuSupportLogged = false; // avoid spamming support log
-
-            // Estimate maximum |psi|^2 via random sampling for rejection sampling normalization
-            function estimateMaxPsi2(n, l, m, samples = 1000) {
-                let maxPsi2 = 0;
-                for (let i = 0; i < samples; i++) {
-                    const r = Math.random() * maxRadius;
-                    const theta = Math.acos(2 * Math.random() - 1);
-                    const phi = Math.random() * 2 * Math.PI;
-                    const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
-                    const psi2 = psi * psi;
-                    if (psi2 > maxPsi2) maxPsi2 = psi2;
-                }
-                // Prevent division by zero
-                return maxPsi2 > 0 ? maxPsi2 : 1e-6;
-            }
-
-            // Accurate hydrogenic components
-            function fact(n){ let f=1; for(let i=2;i<=n;i++) f*=i; return f; }
-            function assocLaguerre(p, alpha, x){
-                if (p === 0) return 1;
-                if (p === 1) return -x + alpha + 1;
-                let Lkm2 = 1, Lkm1 = -x + alpha + 1;
-                for (let k=2;k<=p;k++){
-                    const a = (2*(k-1) + alpha + 1 - x) * Lkm1;
-                    const b = ((k-1) + alpha) * Lkm2;
-                    const Lk = (a - b) / k;
-                    Lkm2=Lkm1; Lkm1=Lk;
-                }
-                return Lkm1;
-            }
-            function radialR(n,l,r){
-                if (n <= l) return 0;
-                const rho = 2*r/n;
-                const p = n - l - 1;
-                const alpha = 2*l + 1;
-                const N = (2/(n*n)) * Math.sqrt(fact(n-l-1)/fact(n+l));
-                return N * Math.exp(-rho/2) * Math.pow(rho, l) * assocLaguerre(p, alpha, rho);
-            }
-            function realY(l,m,theta,phi){
-                // Normalized real spherical harmonics via associated Legendre
-                const PI = Math.PI; const x = Math.cos(theta); const am = Math.abs(m);
-                function fact(n){ let f=1; for(let i=2;i<=n;i++) f*=i; return f; }
-                function assocLegendre(ll, mm, xx){
-                    if (mm < 0 || ll < 0 || mm > ll) return 0;
-                    let pmm = 1;
-                    if (mm > 0){
-                        const somx2 = Math.sqrt(Math.max(0, 1 - xx*xx));
-                        let odd = 1; for (let i=1;i<=mm;i++) odd *= (2*i-1);
-                        pmm = ((mm%2)? -1: 1) * odd * Math.pow(somx2, mm);
-                    }
-                    if (ll === mm) return pmm;
-                    let pmmp1 = xx * (2*mm + 1) * pmm;
-                    if (ll === mm + 1) return pmmp1;
-                    let pmmPrev = pmm, pmml = pmmp1, pll = 0;
-                    for (let L = mm + 2; L <= ll; L++){
-                        pll = ((2*L - 1)*xx*pmml - (L + mm - 1)*pmmPrev) / (L - mm);
-                        pmmPrev = pmml; pmml = pll;
-                    }
-                    return pmml;
-                }
-                const Plm = assocLegendre(l, am, x);
-                const norm = Math.sqrt((2*l+1)/(4*PI) * fact(l-am)/Math.max(1,fact(l+am)));
-                if (m === 0) return norm * Plm;
-                const base = Math.SQRT2 * norm * Plm;
-                return (m > 0) ? base * Math.cos(am * phi) : base * Math.sin(am * phi);
-            }
-            function getWaveFunctionValue(n, l, m, r, theta, phi) { return radialR(n,l,r) * realY(l,m,theta,phi); }
-
-            // Precompute radial LUT (1D) for R_nl(r) to avoid expensive per-sample exp/polynomial
-            function createRadialLUT(n, l, size = 1024) {
-                const arr = new Float32Array(size * 4); // RGBA but we only fill R channel
-                let maxRabs = 0;
-                for (let i = 0; i < size; i++) {
-                    const t = i / (size - 1);
-                    const r = t * maxRadius;
-                    // compute radial part similarly to getWaveFunctionValue but only radial
-                    let radial_part = 0;
-                    if (n <= l) {
-                        radial_part = 0;
-                    } else {
-                        const x = 2 * r / n;
-                        const p = n - l - 1;
-                        const alpha = 2 * l + 1;
-                        let L = 1;
-                        if (p === 0) {
-                            L = 1;
-                        } else if (p === 1) {
-                            L = -x + (alpha + 1);
-                        } else if (p === 2) {
-                            L = 0.5 * (x * x - 2 * (alpha + 2) * x + (alpha + 1) * (alpha + 2));
-                        } else if (p === 3) {
-                            L = (1 / 6) * (-x * x * x + 3 * (alpha + 3) * x * x - 3 * (alpha + 2) * (alpha + 3) * x + (alpha + 1) * (alpha + 2) * (alpha + 3));
-                        } else {
-                            // For higher p, fall back to recurrence through assocLaguerre for stability
-                            // This case is rare for current UI presets but keeps correctness
-                            L = (function(){
-                                // small inline stable recurrence
-                                if (p === 0) return 1;
-                                if (p === 1) return -x + alpha + 1;
-                                let Lkm2 = 1, Lkm1 = -x + alpha + 1;
-                                for (let k = 2; k <= p; k++){
-                                    const a = (2*(k-1) + alpha + 1 - x) * Lkm1;
-                                    const b = ((k-1) + alpha) * Lkm2;
-                                    const Lk = (a - b) / k;
-                                    Lkm2 = Lkm1; Lkm1 = Lk;
-                                }
-                                return Lkm1;
-                            })();
-                        }
-                        radial_part = Math.pow(x, l) * L * Math.exp(-x / 2);
-                    }
-                    maxRabs = Math.max(maxRabs, Math.abs(radial_part));
-                    arr[i * 4 + 0] = radial_part;
-                    arr[i * 4 + 1] = 0;
-                    arr[i * 4 + 2] = 0;
-                    arr[i * 4 + 3] = 1;
-                }
-                const tex = new THREE.DataTexture(arr, size, 1, THREE.RGBAFormat, THREE.FloatType);
-                tex.needsUpdate = true;
-                tex.minFilter = THREE.LinearFilter;
-                tex.magFilter = THREE.LinearFilter;
-                tex.wrapS = THREE.ClampToEdgeWrapping;
-                tex.wrapT = THREE.ClampToEdgeWrapping;
-                // record maximum |R_{nl}(r)| over sampled domain for amplitude scaling
-                tex._maxRabs = maxRabs;
-                return tex;
-            }
-
-            // Estimate max |Y_lm|^2 for scaling
-            function estimateMaxAngular2(l, m, samples = 2000) {
-                let maxA2 = 0.0;
-                for (let i = 0; i < samples; i++) {
-                    const u = Math.random();
-                    const v = Math.random();
-                    const theta = Math.acos(1 - 2 * u);
-                    const phi = 2 * Math.PI * v;
-                    const a = realY(l, m, theta, phi);
-                    const a2 = a * a;
-                    if (a2 > maxA2) maxA2 = a2;
-                }
-                return Math.max(maxA2, 1e-6);
-            }
-
-            // Build inverse CDF texture for r sampling: p in [0,1] -> r/maxRadius
-            function createRadialInvCDF(n, l, size = 1024) {
-                // Compute PDF over r: |R_{nl}(r)|^2 r^2
-                const radial = new Float32Array(size);
-                for (let i = 0; i < size; i++) {
-                    const t = i / (size - 1);
-                    const r = t * maxRadius;
-                    const R = radialR(n,l,r);
-                    radial[i] = R*R * (r * r);
-                }
-                // Build CDF
-                const cdf = new Float32Array(size);
-                let sum = 0;
-                for (let i = 0; i < size; i++) { sum += radial[i]; cdf[i] = sum; }
-                if (sum <= 1e-30) {
-                    // Degenerate, fallback to uniform radius
-                    for (let i = 0; i < size; i++) cdf[i] = i / (size - 1);
-                } else {
-                    // Normalize to [0,1]
-                    for (let i = 0; i < size; i++) cdf[i] /= sum;
-                }
-                // Build inverse CDF by mapping u in [0,1] to r via linear search on CDF
-                const inv = new Float32Array(size * 4);
-                let j = 0;
-                for (let i = 0; i < size; i++) {
-                    const u = i / (size - 1);
-                    while (j < size - 1 && cdf[j] < u) j++;
-                    const j0 = Math.max(0, j - 1);
-                    const j1 = j;
-                    const c0 = cdf[j0];
-                    const c1 = cdf[j1];
-                    const t = c1 > c0 ? (u - c0) / (c1 - c0) : 0.0;
-                    const r0 = (j0 / (size - 1)) * maxRadius;
-                    const r1 = (j1 / (size - 1)) * maxRadius;
-                    const r = r0 + t * (r1 - r0);
-                    inv[i * 4 + 0] = r / maxRadius; // store normalized radius
-                    inv[i * 4 + 1] = 0;
-                    inv[i * 4 + 2] = 0;
-                    inv[i * 4 + 3] = 1;
-                }
-                const tex = new THREE.DataTexture(inv, size, 1, THREE.RGBAFormat, THREE.FloatType);
-                tex._cpuArray = inv; // attach CPU array for fast sampling
-                tex.needsUpdate = true;
-                tex.minFilter = THREE.LinearFilter;
-                tex.magFilter = THREE.LinearFilter;
-                tex.wrapS = THREE.ClampToEdgeWrapping;
-                tex.wrapT = THREE.ClampToEdgeWrapping;
-                return tex;
-            }
-
-            // Build angular importance sampling tables for given (l,m)
-            function createAngularInvTables(l, m, thetaSize = 256, phiSize = 256) {
-                // PDF grid over theta in [0,pi], phi in [0,2pi]
-
-                const thetaPDF = new Float32Array(thetaSize);
-                const rowPhiCDFs = new Array(thetaSize);
-                const dTheta = Math.PI / (thetaSize - 1);
-                const dPhi = (2 * Math.PI) / (phiSize - 1);
-                // Compute per-row phi PDFs and row sums
-                for (let i = 0; i < thetaSize; i++) {
-                    const theta = i * dTheta;
-                    const st = Math.sin(theta);
-                    const rowPDF = new Float32Array(phiSize);
-                    let rowSum = 0;
-                    for (let j = 0; j < phiSize; j++) {
-                        const phi = j * dPhi;
-                        const a = realY(l, m, theta, phi);
-                        const w = a * a * st; // include measure sin(theta)
-                        rowPDF[j] = w;
-                        rowSum += w;
-                    }
-                    // Build row CDF (normalized)
-                    const rowCDF = new Float32Array(phiSize);
-                    if (rowSum <= 1e-20) {
-                        // Degenerate row: uniform phi
-                        for (let j = 0; j < phiSize; j++) rowCDF[j] = j / (phiSize - 1);
-                    } else {
-                        let acc = 0;
-                        for (let j = 0; j < phiSize; j++) { acc += rowPDF[j]; rowCDF[j] = acc / rowSum; }
-                    }
-                    rowPhiCDFs[i] = rowCDF;
-                    // Row contribution to theta marginal
-                    thetaPDF[i] = rowSum;
-                }
-                // Theta CDF
-                const thetaCDF = new Float32Array(thetaSize);
-                let sumTheta = 0;
-                for (let i = 0; i < thetaSize; i++) { sumTheta += thetaPDF[i]; thetaCDF[i] = sumTheta; }
-                if (sumTheta <= 1e-30) {
-                    for (let i = 0; i < thetaSize; i++) thetaCDF[i] = i / (thetaSize - 1);
-                } else {
-                    for (let i = 0; i < thetaSize; i++) thetaCDF[i] /= sumTheta;
-                }
-
-                // Build inverse CDF for theta (normalized theta/PI)
-                const invThetaArr = new Float32Array(thetaSize * 4);
-                let it = 0;
-                for (let k = 0; k < thetaSize; k++) {
-                    const u = k / (thetaSize - 1);
-                    while (it < thetaSize - 1 && thetaCDF[it] < u) it++;
-                    const i0 = Math.max(0, it - 1);
-                    const i1 = it;
-                    const c0 = thetaCDF[i0];
-                    const c1 = thetaCDF[i1];
-                    const t = c1 > c0 ? (u - c0) / (c1 - c0) : 0;
-                    const th0 = i0 * dTheta;
-                    const th1 = i1 * dTheta;
-                    const th = th0 + t * (th1 - th0);
-                    invThetaArr[k*4 + 0] = th / Math.PI;
-                    invThetaArr[k*4 + 1] = 0;
-                    invThetaArr[k*4 + 2] = 0;
-                    invThetaArr[k*4 + 3] = 1;
-                }
-                const invThetaTex = new THREE.DataTexture(invThetaArr, thetaSize, 1, THREE.RGBAFormat, THREE.FloatType);
-                invThetaTex.needsUpdate = true;
-                invThetaTex.minFilter = THREE.LinearFilter;
-                invThetaTex.magFilter = THREE.LinearFilter;
-                invThetaTex.wrapS = THREE.ClampToEdgeWrapping;
-                invThetaTex.wrapT = THREE.ClampToEdgeWrapping;
-
-                // Build inverse CDF for phi for each theta row
-                const invPhiArr = new Float32Array(thetaSize * phiSize * 4);
-                for (let i = 0; i < thetaSize; i++) {
-                    const rowCDF = rowPhiCDFs[i];
-                    let jp = 0;
-                    for (let j = 0; j < phiSize; j++) {
-                        const v = j / (phiSize - 1);
-                        while (jp < phiSize - 1 && rowCDF[jp] < v) jp++;
-                        const j0 = Math.max(0, jp - 1);
-                        const j1 = jp;
-                        const c0 = rowCDF[j0];
-                        const c1 = rowCDF[j1];
-                        const t = c1 > c0 ? (v - c0) / (c1 - c0) : 0;
-                        const ph0 = j0 * dPhi;
-                        const ph1 = j1 * dPhi;
-                        const ph = ph0 + t * (ph1 - ph0);
-                        const idx = (i * phiSize + j) * 4;
-                        invPhiArr[idx + 0] = ph / (2 * Math.PI);
-                        invPhiArr[idx + 1] = 0;
-                        invPhiArr[idx + 2] = 0;
-                        invPhiArr[idx + 3] = 1;
-                    }
-                }
-                const invPhiTex = new THREE.DataTexture(invPhiArr, phiSize, thetaSize, THREE.RGBAFormat, THREE.FloatType);
-                invPhiTex.needsUpdate = true;
-                invPhiTex.minFilter = THREE.LinearFilter;
-                invPhiTex.magFilter = THREE.LinearFilter;
-                invPhiTex.wrapS = THREE.ClampToEdgeWrapping;
-                invPhiTex.wrapT = THREE.ClampToEdgeWrapping;
-
-                // Return textures and raw arrays for CPU importance sampling
-                return { invThetaTex, invPhiTex, thetaSize, phiSize, invThetaData: invThetaArr, invPhiData: invPhiArr };
-            }
-
-            // Create or update a GPU render target sized to hold numPoints samples (RGBA32F)
-            function createGPUSampleTarget(numPoints) {
-                const size = Math.ceil(Math.sqrt(numPoints));
-                const width = size;
-                const height = Math.ceil(numPoints / width);
-                
-                // Dispose previous
-                if (gpuSampleTarget) {
-                    gpuSampleTarget.dispose();
-                    gpuSampleTarget = null;
-                }
-                
-                // Check WebGL capabilities before creating render target
-                const gl = renderer.getContext();
-                if (!renderer.capabilities.isWebGL2) {
-                    console.error('GPU mode requires WebGL2');
-                    return null;
-                }
-                
-                const floatExtension = renderer.extensions.get('EXT_color_buffer_float') || 
-                                     renderer.extensions.get('WEBGL_color_buffer_float');
-                if (!floatExtension) {
-                    console.error('GPU mode requires floating point render target support');
-                    return null;
-                }
-                
-                const rt = new THREE.WebGLRenderTarget(width, height, {
-                    wrapS: THREE.ClampToEdgeWrapping,
-                    wrapT: THREE.ClampToEdgeWrapping,
-                    minFilter: THREE.NearestFilter,
-                    magFilter: THREE.NearestFilter,
-                    type: THREE.FloatType,
-                    format: THREE.RGBAFormat,
-                    depthBuffer: false,
-                    stencilBuffer: false
-                });
-                
-                // Validate render target creation
-                const prevTarget = renderer.getRenderTarget();
-                renderer.setRenderTarget(rt);
-                const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-                renderer.setRenderTarget(prevTarget);
-                
-                if (status !== gl.FRAMEBUFFER_COMPLETE) {
-                    console.error('GPU render target creation failed:', status);
-                    rt.dispose();
-                    return null;
-                }
-                
-                rt._texWidth = width;
-                rt._texHeight = height;
-                gpuSampleTarget = rt;
-                return rt;
-            }
-
-            // Render a fullscreen quad into the sample target. Fragment shader generates
-            // random samples (r,theta,phi), computes position and psi, and writes (x,y,z,psi)
-            // Update the GPU sampling fragment shader to fix potential issues:
-            // - Ensure rejection loop always produces a sample (fallback to uniform sampling if needed)
-            // - Improve random function for better distribution
-            // - Add debug output for shader compilation
-            const gpuSampleFragShader = `
-uniform float uN, uL, uM;
-uniform sampler2D uRadialLUT;
-uniform sampler2D uInvRadialCDF;
-uniform sampler2D uInvThetaCDF;
-uniform sampler2D uInvPhiCDF;
-uniform float uLUTSize, uMaxPsi2, uNumPoints;
-uniform vec2 uResolution;
-uniform float uSeed;
-uniform float uMaxRadius; // ensures LUT lookup matches CPU/LUT generation
-uniform float uFrame; // frame counter for decorrelated RNG
-uniform float uMaxAngular2; // max of angular^2 for rejection bound
-uniform float uThetaSize; // rows in phi table / width of theta table
-
-// Hash-based RNGs to reduce spatial correlation
-float hash11(float p) {
-    p = fract(p * 0.1031);
-    p *= p + 33.33;
-    p *= p + p;
-    return fract(p);
-}
-float hash21(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
-float rng(vec2 s) { return hash21(s); }
-
-vec3 sphericalToCartesian(float r, float theta, float phi) {
-    return vec3(r * sin(theta) * cos(phi), r * sin(theta) * sin(phi), r * cos(theta));
-}
-
-float getRadial(float r, float n, float l) {
-    // The LUT is generated over r in [0, maxRadius] mapped to [0,1]
-    float t = clamp(r / uMaxRadius, 0.0, 1.0);
-    return texture(uRadialLUT, vec2(t, 0.0)).r;
-}
-
-// Inverse-CDF sampling for radius from precomputed LUT (normalized)
-float sampleRadius(float u) {
-    float rNorm = texture(uInvRadialCDF, vec2(u, 0.0)).r;
-    return rNorm * uMaxRadius;
-}
-
-float factorialf(int n){ float f=1.0; for(int i=2;i<=8;i++){ if(i>n) break; f*=float(i);} return f; }
-float assocLegendreP(int l,int m,float x){
-    float pmm=1.0;
-    if (m>0){ float somx2 = sqrt(max(0.0, 1.0 - x*x)); float odd=1.0; for(int i=1;i<=8;i++){ if(i>m) break; odd*=float(2*i-1);} pmm = ((m%2)==0?1.0:-1.0) * odd * pow(somx2, float(m)); }
-    if (l==m) return pmm;
-    float pmmp1 = x * (2.0*float(m)+1.0) * pmm;
-    if (l==m+1) return pmmp1;
-    float pmmPrev = pmm; float pmml = pmmp1; float pll = 0.0;
-    for (int ll=2; ll<=8; ll++){
-        if (ll <= m+1) continue; if (ll > l) break;
-        pll = ((2.0*float(ll)-1.0)*x*pmml - (float(ll)+float(m)-1.0)*pmmPrev) / (float(ll)-float(m));
-        pmmPrev = pmml; pmml = pll;
-    }
-    return pmml;
-}
-float getAngular(float t, float p, float l, float m) {
-    const float PI = 3.141592653589793;
-    int li = int(l + 0.5);
-    int mi = int(abs(m) + 0.5);
-    float x = cos(t);
-    float Plm = assocLegendreP(li, mi, x);
-    float norm = sqrt(((2.0*float(li)+1.0)/(4.0*PI)) * (factorialf(li-mi) / max(1.0, factorialf(li+mi))));
-    if (mi==0) return norm * Plm;
-    float base = sqrt(2.0) * norm * Plm;
-    return (m>0.0) ? base * cos(float(mi)*p) : base * sin(float(mi)*p);
-}
-
-void main() {
-    // Compute integer pixel coordinates and linear index for optional bounds check
-    float ix = floor(gl_FragCoord.x);
-    float iy = floor(gl_FragCoord.y);
-    float idx = ix + iy * uResolution.x;
-    if (idx >= uNumPoints) discard;
-
-    // Derive a decorrelated per-pixel seed using Cranley-Patterson rotation by frame
-    const vec2 R2 = vec2(0.754877666, 0.569840296);
-    vec2 jitter = R2 * (uFrame + uSeed * 101.0);
-    vec2 baseSeed = (vec2(ix, iy) + 0.5 + jitter) / uResolution;
-    float psi = 0.0;
-    vec3 pos = vec3(0.0);
-    bool found = false;
-
-    // Rejection sampling loop with fallback
-    // Importance sample radius (inverse-CDF) and angles (theta,phi) using precomputed inverse tables
-    vec2 s = baseSeed + R2 * 17.0;
-    float u1 = rng(s + 0.11);
-    float u2 = rng(s + 0.37);
-    float u3 = rng(s + 0.59);
-    float r = sampleRadius(u1);
-    float thetaNorm = texture(uInvThetaCDF, vec2(u2, 0.5)).r; // [0,1]
-    float theta = thetaNorm * 3.141592653589793;
-    float thetaIndex = clamp(thetaNorm * (uThetaSize - 1.0), 0.0, uThetaSize - 1.0);
-    float row0 = floor(thetaIndex);
-    float row1 = min(uThetaSize - 1.0, row0 + 1.0);
-    float frow = thetaIndex - row0;
-    float v0 = (row0 + 0.5) / uThetaSize;
-    float v1 = (row1 + 0.5) / uThetaSize;
-    float phi0 = texture(uInvPhiCDF, vec2(u3, v0)).r;
-    float phi1 = texture(uInvPhiCDF, vec2(u3, v1)).r;
-    float phiNorm = mix(phi0, phi1, frow);
-    float phi = phiNorm * 6.283185307179586;
-
-    float radial = getRadial(r, uN, uL);
-    float angular = getAngular(theta, phi, uL, uM);
-    psi = radial * angular;
-    pos = sphericalToCartesian(r, theta, phi);
-
-    // Fallback: uniform sampling if rejection fails
-    // No fallback needed with fully importance-sampled angles and radius
-
-    gl_FragColor = vec4(pos, psi);
-}
-`;
-
-            // Update renderGPUSamples to log shader compilation errors
-            let gpuFrame = 0;
-            function renderGPUSamples(n, l, m, numPoints) {
-                // Ensure LUT and invCDF exist for current n,l (cache per n,l)
-                const lutKey = `${n}_${l}`;
-                if (!radialCache[lutKey]) {
-                    const radTex = createRadialLUT(n, l, 1024);
-                    radialCache[lutKey] = {
-                        radial: radTex,
-                        invCdf: createRadialInvCDF(n, l, 1024),
-                        maxR: radTex._maxRabs || 1
-                    };
-                }
-                gpuRadialLUT = radialCache[lutKey].radial;
-                gpuLUTSize = 1024;
-
-                // Ensure angular tables exist for current l,m
-                const angKey = `${l}_${m}`;
-                if (!angularCache[angKey]) {
-                    angularCache[angKey] = createAngularInvTables(l, m, 256, 256);
-                }
-
-                const rt = createGPUSampleTarget(numPoints);
-                if (!rt) {
-                    console.error('Failed to create GPU sample target, falling back to points mode');
-                    renderMode = 'points';
-                    updateModeButtonText();
-                    return null;
-                }
-                const width = rt._texWidth, height = rt._texHeight;
-
-                // Build quad scene if not present
-                if (!gpuQuadScene) {
-                    gpuQuadScene = new THREE.Scene();
-                } else {
-                    // dispose previous quad mesh material if any
-                    if (gpuQuadScene.children.length) {
-                        const old = gpuQuadScene.children[0];
-                        old.material.dispose();
-                        gpuQuadScene.remove(old);
-                    }
-                }
-
-                const quadGeom = new THREE.PlaneBufferGeometry(2, 2);
-                const quadMat = new THREE.ShaderMaterial({
-                    uniforms: {
-                        uN: { value: n },
-                        uL: { value: l },
-                        uM: { value: m },
-                        uRadialLUT: { value: radialCache[`${n}_${l}`].radial },
-                        uInvRadialCDF: { value: radialCache[`${n}_${l}`].invCdf },
-                        uInvThetaCDF: { value: angularCache[`${l}_${m}`].invThetaTex },
-                        uInvPhiCDF: { value: angularCache[`${l}_${m}`].invPhiTex },
-                        uLUTSize: { value: gpuLUTSize }, // Use consistent LUT size
-                        uMaxPsi2: { value: estimateMaxPsi2(n, l, m) },
-                        uMaxAngular2: { value: estimateMaxAngular2(l, m) },
-                        uNumPoints: { value: numPoints },
-                        uResolution: { value: new THREE.Vector2(gpuSampleTarget.width, gpuSampleTarget.height) },
-                        uSeed: { value: Math.random() },
-                        uMaxRadius: { value: maxRadius },
-                        uFrame: { value: gpuFrame },
-                        uThetaSize: { value: angularCache[`${l}_${m}`].thetaSize }
-                    },
-                    vertexShader: `
-                        varying vec2 vUv;
-                        void main() {
-                            vUv = uv;
-                            gl_Position = vec4(position, 1.0);
-                        }
-                    `,
-                    fragmentShader: gpuSampleFragShader // updated
-                });
-
-                const quad = new THREE.Mesh(quadGeom, quadMat);
-                gpuQuadScene.add(quad);
-
-                // render quad into target
-                const prevRenderTarget = renderer.getRenderTarget();
-                renderer.setRenderTarget(rt);
-                renderer.clear();
-                const orthoCamera = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
-                renderer.render(gpuQuadScene, orthoCamera);
-                renderer.setRenderTarget(prevRenderTarget);
-                gpuFrame++;
-
-                // Check for compilation errors after rendering (when shaders are actually compiled)
-                if (quadMat.program) {
-                    const gl = renderer.getContext();
-                    const program = quadMat.program.program;
-                    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-                        console.error('GPU Shader link error:', gl.getProgramInfoLog(program));
-                    }
-                    const vertShader = gl.getShaderInfoLog(quadMat.program.vertexShader);
-                    const fragShader = gl.getShaderInfoLog(quadMat.program.fragmentShader);
-                    if (vertShader) console.error('GPU Vertex shader compile error:', vertShader);
-                    if (fragShader) console.error('GPU Fragment shader compile error:', fragShader);
-                }
-
-                return rt;
-            }
-
-            // Create a Points mesh whose vertex shader samples the gpuSampleTarget to get position + psi
-            function createGPUPointsMesh(sampleTarget, numPoints) {
-                // build a simple buffer geometry with an index attribute (float id)
-                const geom = new THREE.BufferGeometry();
-                const count = numPoints;
-                const positions = new Float32Array(count * 3);
-                const indices = new Float32Array(count);
-                for (let i = 0; i < count; i++) {
-                    positions[i*3+0] = 0;
-                    positions[i*3+1] = 0;
-                    positions[i*3+2] = 0;
-                    indices[i] = i;
-                }
-                geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-                geom.setAttribute('aIndex', new THREE.BufferAttribute(indices, 1));
-
-                const width = sampleTarget._texWidth, height = sampleTarget._texHeight;
-                // Estimate amplitude scales
-                const n = currentOrbitalData.n, l = currentOrbitalData.l, m = currentOrbitalData.m;
-                const rk = `${n}_${l}`;
-                const radMax = (radialCache[rk] && radialCache[rk].maxR) ? radialCache[rk].maxR : 1;
-                const angMax = Math.sqrt(estimateMaxAngular2(l, m));
-                const ampMax = Math.max(1e-6, radMax * angMax);
-                const alphaScale = 0.9 / ampMax;
-                const sizeScale = alphaScale;
-                const mat = new THREE.ShaderMaterial({
-                    uniforms: {
-                        uSamples: { value: sampleTarget.texture },
-                        uTexSize: { value: new THREE.Vector2(width, height) },
-                        uPointSize: { value: 0.08 },
-                        uColorPos: { value: new THREE.Vector3(colorPositive.r, colorPositive.g, colorPositive.b) },
-                        uColorNeg: { value: new THREE.Vector3(colorNegative.r, colorNegative.g, colorNegative.b) },
-                        uPixelRatio: { value: renderer.getPixelRatio() },
-                        uViewportHeight: { value: renderer.getSize(new THREE.Vector2()).y },
-                        uFov: { value: camera.fov },
-                        uDitherStrength: { value: 0.12 },
-                        uAlphaBase: { value: 0.7 },
-                        uAlphaScale: { value: alphaScale },
-                        uSizeScale: { value: sizeScale },
-                        uBrightnessGamma: { value: 0.7 }
-                    },
-                    vertexShader: `
-                        attribute float aIndex;
-                        uniform sampler2D uSamples;
-                        uniform vec2 uTexSize;
-                        uniform float uPointSize;
-                        uniform vec3 uColorPos;
-                        uniform vec3 uColorNeg;
-                        uniform float uPixelRatio;
-                        uniform float uViewportHeight;
-                        uniform float uFov;
-                        uniform float uDitherStrength;
-                        uniform float uSizeScale;
-                        varying float vPsi;
-                        varying vec3 vColor;
-                        varying float vDither;
-                        varying float vAmp;
-                        varying float vZoom;
-
-                        float hash1(float n) {
-                            return fract(sin(n) * 43758.5453123);
-                        }
-                        void main() {
-                            float id = aIndex;
-                            float w = uTexSize.x;
-                            float h = uTexSize.y;
-                            float ix = mod(id, w);
-                            float iy = floor(id / w);
-                            vec2 uv = vec2((ix + 0.5) / w, (iy + 0.5) / h);
-                            vec4 s = texture2D(uSamples, uv);
-                            vec3 pos = s.xyz;
-                            float psi = s.w;
-                            vPsi = psi;
-                            vAmp = abs(psi);
-                            vColor = (psi >= 0.0) ? uColorPos : uColorNeg;
-                            vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-                            // Match Three.js PointsMaterial size attenuation
-                            float fov = radians(uFov);
-                            float scale = uPixelRatio * (0.5 * uViewportHeight) / tan(0.5 * fov);
-                            vZoom = scale / max(0.1, -mvPosition.z);
-                            float jitter = 1.0 + uDitherStrength * (hash1(id * 17.0 + 0.123) * 2.0 - 1.0);
-                            vDither = jitter;
-                            float sizeAmp = mix(0.6, 1.3, clamp(vAmp * uSizeScale, 0.0, 1.0));
-                            gl_PointSize = uPointSize * vZoom * jitter * sizeAmp;
-                            gl_Position = projectionMatrix * mvPosition;
-                        }
-                    `,
-                    fragmentShader: `
-                        precision highp float;
-                        varying float vPsi;
-                        varying vec3 vColor;
-                        varying float vDither; varying float vZoom;
-                        uniform float uAlphaBase; uniform float uAlphaScale; uniform float uBrightnessGamma;
-                        void main() {
-                            vec2 uv = gl_PointCoord*2.0 - 1.0; float r = length(uv); float mask = smoothstep(1.0, 0.85, 1.0 - r);
-                            float d = clamp(vDither * 0.15 + 0.85, 0.0, 1.0);
-                            float alpha = uAlphaBase * d * clamp(abs(vPsi) * uAlphaScale, 0.0, 1.0) * pow(vZoom, uBrightnessGamma) * mask;
-                            if (alpha <= 0.001) discard;
-                            gl_FragColor = vec4(vColor, alpha);
-                        }
-                    `,
-                    transparent: true,
-                    depthWrite: !occlusionEnabled,
-                    depthTest: occlusionEnabled,
-                    blending: THREE.AdditiveBlending
-                });
-
-                const points = new THREE.Points(geom, mat);
-                points.userData = points.userData || {};
-                points.userData.isOrbital = true;
-                return points;
-            }
-
-            // Regenerate using true probability density |psi|^2 and GPU instancing (InstancedMesh)
-            function regenerateOrbitalGeometry() {
-                const { n, l, m } = currentOrbitalData;
-                const numPoints = parseInt(densitySlider.value);
-
-                // WebGPU mode does not use Three.js objects; just (re)build particle buffer
-                if (renderMode === 'webgpu') {
-                    if (!webgpu.initialized) {
-                        /* try to init silently */
-                        initWebGPU().then(ok=>{ if(ok){ ensureWebGPUParticles(); updateModeButtonText(); } });
-                    } else {
-                        ensureWebGPUParticles();
-                    }
-                    return; // skip rest
-                }
-
-                // Remove any previous orbital objects from the scene (safe cleanup)
-                scene.children.slice().forEach(child => {
-                    if (child.userData && child.userData.isOrbital) {
-                        // dispose geometries/materials if present
-                        if (child.type === 'Group') {
-                            child.children.forEach(ch => {
-                                ch.geometry?.dispose?.();
-                                ch.material?.dispose?.();
-                            });
-                        } else {
-                            child.geometry?.dispose?.();
-                            child.material?.dispose?.();
-                        }
-                        scene.remove(child);
-                    }
-                });
-                currentOrbital = null;
-
-                // Estimate max |psi|^2 for normalization (rejection sampling)
-                const maxPsi2 = estimateMaxPsi2(n, l, m);
-
-                // If GPU mode requested but renderer doesn't support float render targets, fallback
-                if (renderMode === 'gpu') {
-                    const supports = renderer.capabilities.isWebGL2 && (renderer.extensions.get('EXT_color_buffer_float') || renderer.extensions.get('WEBGL_color_buffer_float'));
-                    if (!supports) {
-                        console.warn('Floating point render targets not supported; falling back to points mode');
-                        renderMode = 'points';
-                    } else {
-                        if (!gpuSupportLogged) {
-                            console.info('GPU sampling enabled (float render targets available)');
-                            gpuSupportLogged = true;
-                        }
-                    }
-                }
-
-                // Geometry & materials (reuse by caching on function property)
-                if (!regenerateOrbitalGeometry._sphereGeo) {
-                    regenerateOrbitalGeometry._sphereGeo = new THREE.SphereGeometry(0.12, 6, 6);
-                    regenerateOrbitalGeometry._quadGeo = new THREE.PlaneBufferGeometry(0.24, 0.24); // quad for impostors
-                    const commonMatOpts = {
-                        transparent: true,
-                        opacity: 0.5,
-                        depthWrite: !occlusionEnabled,
-                        depthTest: occlusionEnabled,
-                        blending: THREE.AdditiveBlending
-                    };
-                    regenerateOrbitalGeometry._matPos = new THREE.MeshBasicMaterial({ color: colorPositive, ...commonMatOpts });
-                    regenerateOrbitalGeometry._matNeg = new THREE.MeshBasicMaterial({ color: colorNegative, ...commonMatOpts });
-                    
-                    // Billboard materials for impostors
-                    const billboardVertShader = `
-                        attribute vec3 instancePosition;
-                        attribute float instanceScale;
-                        varying vec3 vColor;
-                        uniform vec3 color;
-                        
-                        void main() {
-                            vec3 pos = instancePosition;
-                            vec3 toCamera = normalize(cameraPosition - pos);
-                            vec3 up = vec3(0.0, 1.0, 0.0);
-                            vec3 right = normalize(cross(toCamera, up));
-                            up = cross(right, toCamera);
-                            
-                            vec3 vertex = position * instanceScale;
-                            vertex = right * vertex.x + up * vertex.y + toCamera * vertex.z;
-                            pos += vertex;
-                            
-                            gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-                            vColor = color;
-                        }
-                    `;
-                    const billboardFragShader = `
-                        varying vec3 vColor;
-                        void main() {
-                            gl_FragColor = vec4(vColor, 1.0);
-                        }
-                    `;
-                    
-                    regenerateOrbitalGeometry._matPosBillboard = new THREE.ShaderMaterial({
-                        uniforms: {
-                            color: { value: colorPositive },
-                            cameraPosition: { value: camera.position }
-                        },
-                        vertexShader: billboardVertShader,
-                        fragmentShader: billboardFragShader,
-                        transparent: true,
-                        depthWrite: !occlusionEnabled,
-                        depthTest: occlusionEnabled,
-                        blending: THREE.AdditiveBlending
-                    });
-                    
-                    regenerateOrbitalGeometry._matNegBillboard = new THREE.ShaderMaterial({
-                        uniforms: {
-                            color: { value: colorNegative },
-                            cameraPosition: { value: camera.position }
-                        },
-                        vertexShader: billboardVertShader,
-                        fragmentShader: billboardFragShader,
-                        transparent: true,
-                        depthWrite: !occlusionEnabled,
-                        depthTest: occlusionEnabled,
-                        blending: THREE.AdditiveBlending
-                    });
-                }
-                const sphereGeo = regenerateOrbitalGeometry._sphereGeo;
-                const quadGeo = regenerateOrbitalGeometry._quadGeo;
-                const matPos = regenerateOrbitalGeometry._matPos;
-                const matNeg = regenerateOrbitalGeometry._matNeg;
-                const matPosBillboard = regenerateOrbitalGeometry._matPosBillboard;
-                const matNegBillboard = regenerateOrbitalGeometry._matNegBillboard;
-
-                // Choose rendering path
-                if (renderMode === 'points') {
-                    // Remove old (already cleaned above)
-                    // Ensure capacity
-                    if (!pointsCache.geometry || pointsCache.capacity < numPoints) {
-                        pointsCache.geometry?.dispose?.();
-                        pointsCache.material?.dispose?.();
-                        const geom = new THREE.BufferGeometry();
-                        const posArr = new Float32Array(numPoints * 3);
-                        const colArr = new Float32Array(numPoints * 3);
-                        const psiArr = new Float32Array(numPoints);
-                        const idxArr = new Float32Array(numPoints);
-                        for (let i = 0; i < numPoints; i++) idxArr[i] = i;
-                        geom.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-                        geom.setAttribute('aColor', new THREE.BufferAttribute(colArr, 3));
-                        geom.setAttribute('aPsi', new THREE.BufferAttribute(psiArr, 1));
-                        geom.setAttribute('aIndex', new THREE.BufferAttribute(idxArr, 1));
-                        pointsCache.geometry = geom;
-                        // Build amplitude-weighted shader material similar to GPU points
-                        const rk = `${n}_${l}`;
-                        if (!radialCache[rk]) {
-                            const radTex = createRadialLUT(n, l, 1024);
-                            radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n,l,1024), maxR: radTex._maxRabs || 1 };
-                        }
-                        const radMax = radialCache[rk].maxR || 1;
-                        const angMax = Math.sqrt(estimateMaxAngular2(l, m));
-                        const ampMax = Math.max(1e-6, radMax * angMax);
-                        const alphaScale = 0.9 / ampMax;
-                        const sizeScale = alphaScale;
-                        pointsCache.material = new THREE.ShaderMaterial({
-                            uniforms: {
-                                uPointSize: { value: 0.08 },
-                                uPixelRatio: { value: renderer.getPixelRatio() },
-                                uViewportHeight: { value: renderer.getSize(new THREE.Vector2()).y },
-                                uFov: { value: camera.fov },
-                                uDitherStrength: { value: 0.12 },
-                                uAlphaBase: { value: 0.7 },
-                                uAlphaScale: { value: alphaScale },
-                                uSizeScale: { value: sizeScale },
-                                uBrightnessGamma: { value: 0.7 },
-                            },
-                            vertexShader: `
-                                attribute vec3 aColor; attribute float aPsi; attribute float aIndex;
-                                uniform float uPointSize, uPixelRatio, uViewportHeight, uFov, uDitherStrength, uSizeScale;
-                                varying vec3 vColor; varying float vPsi; varying float vDither; varying float vZoom;
-                                float hash1(float n){ return fract(sin(n) * 43758.5453123); }
-                                void main(){ vPsi = aPsi; vColor = aColor; vec4 mv = modelViewMatrix * vec4(position,1.0);
-                                  float fov = radians(uFov); float scale = uPixelRatio * (0.5 * uViewportHeight) / tan(0.5 * fov);
-                                  vZoom = scale / max(0.1, -mv.z);
-                                  float jitter = 1.0 + uDitherStrength * (hash1(aIndex * 17.0 + 0.123) * 2.0 - 1.0); vDither = jitter;
-                                  float sizeAmp = mix(0.6, 1.3, clamp(abs(aPsi) * uSizeScale, 0.0, 1.0));
-                                  gl_PointSize = uPointSize * vZoom * jitter * sizeAmp; gl_Position = projectionMatrix * mv; }
-                            `,
-                            fragmentShader: `
-                                precision highp float; varying float vPsi; varying vec3 vColor; varying float vDither; varying float vZoom; 
-                                uniform float uAlphaBase; uniform float uAlphaScale; uniform float uBrightnessGamma; 
-                                void main(){ 
-                                  // circular point sprite with soft edge
-                                  vec2 uv = gl_PointCoord * 2.0 - 1.0; 
-                                  float r = length(uv);
-                                  float mask = smoothstep(1.0, 0.85, 1.0 - r);
-                                  float d = clamp(vDither * 0.15 + 0.85, 0.0, 1.0);
-                                  float amp = clamp(abs(vPsi) * uAlphaScale, 0.0, 1.0);
-                                  float zoomGain = pow(vZoom, uBrightnessGamma);
-                                  float alpha = uAlphaBase * d * amp * zoomGain * mask;
-                                  if (alpha <= 0.001) discard; 
-                                  gl_FragColor=vec4(vColor, alpha); 
-                                }
-                            `,
-                            transparent: true, depthWrite: !occlusionEnabled, depthTest: occlusionEnabled, blending: THREE.AdditiveBlending
-                        });
-                        pointsCache.capacity = numPoints;
-                    }
-                    const geom = pointsCache.geometry;
-                    const posArr = geom.getAttribute('position').array;
-                    const colArr = geom.getAttribute('aColor').array;
-                    const psiArr = geom.getAttribute('aPsi').array;
-                    // Fill using importance sampling via inverse CDFs (scientifically accurate)
-                    const rk = `${n}_${l}`;
-                    const ak = `${l}_${m}`;
-                    if (!radialCache[rk]) {
-                        const radTex = createRadialLUT(n, l, 1024);
-                        radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n, l, 1024), maxR: radTex._maxRabs || 1 };
-                    }
-                    if (!angularCache[ak]) {
-                        angularCache[ak] = createAngularInvTables(l, m, 256, 256);
-                    }
-                    const radialInvCdf = radialCache[rk].invCdf;
-                    const radialArray = radialInvCdf._cpuArray;
-                    const radialSize = radialInvCdf.image.width;
-                    const { invThetaData, invPhiData, thetaSize, phiSize } = angularCache[ak];
-                    for (let i = 0; i < numPoints; i++) {
-                        const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-                        // radius
-                        const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-                        const rNorm = radialArray[rIdx * 4];
-                        const r = rNorm * maxRadius;
-                        // theta
-                        const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-                        const thetaNorm = invThetaData[thetaIdx * 4];
-                        const theta = thetaNorm * Math.PI;
-                        // phi conditional on theta row
-                        const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-                        const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-                        const phiNorm = invPhiData[phiDataIdx];
-                        const phi = phiNorm * 2 * Math.PI;
-                        // Cartesian
-                        const sinTheta = Math.sin(theta);
-                        const cosTheta = Math.cos(theta);
-                        const cosPhi = Math.cos(phi);
-                        const sinPhi = Math.sin(phi);
-                        const x = r * sinTheta * cosPhi;
-                        const y = r * sinTheta * sinPhi;
-                        const z = r * cosTheta;
-                        const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
-                        const p = i * 3;
-                        posArr[p] = x; posArr[p+1] = y; posArr[p+2] = z;
-                        const c = psi >= 0 ? colorPositive : colorNegative;
-                        colArr[p] = c.r; colArr[p+1] = c.g; colArr[p+2] = c.b;
-                        psiArr[i] = psi;
-                    }
-                    geom.getAttribute('position').needsUpdate = true;
-                    geom.getAttribute('aColor').needsUpdate = true;
-                    geom.getAttribute('aPsi').needsUpdate = true;
-                    const points = new THREE.Points(geom, pointsCache.material);
-                    points.userData = points.userData || {};
-                    points.userData.isOrbital = true;
-                    currentOrbital = points;
-                    scene.add(points);
-                    // store capacities
-                    currentOrbital._posCapacity = Math.ceil(numPoints/2);
-                    currentOrbital._negCapacity = Math.floor(numPoints/2);
-                    currentOrbital._lastConfig = { n, l, m, numPoints };
-                    return;
-                }
-
-                // GPU mode: render samples into a float texture then draw points that read from it
-                if (renderMode === 'gpu') {
-                    // Clean old (already cleaned above)
-                    const rt = renderGPUSamples(n, l, m, numPoints);
-                    if (!rt) {
-                        // GPU mode failed, renderGPUSamples should have set renderMode to 'points'
-                        // Re-call this function to regenerate with points mode
-                        regenerateOrbitalGeometry(n, l, m, numPoints);
-                        return;
-                    }
-                    // create GPU points mesh
-                    gpuSampleTarget = rt;
-                    if (gpuSampleMesh) {
-                        gpuSampleMesh.geometry.dispose();
-                        gpuSampleMesh.material.dispose();
-                        scene.remove(gpuSampleMesh);
-                        gpuSampleMesh = null;
-                    }
-                    gpuSampleMesh = createGPUPointsMesh(rt, numPoints);
-                    gpuSampleMesh.userData = gpuSampleMesh.userData || {};
-                    gpuSampleMesh.userData.isOrbital = true;
-                    currentOrbital = gpuSampleMesh;
-                    scene.add(gpuSampleMesh);
-                    currentOrbital._lastConfig = { n, l, m, numPoints };
-                    return;
-                }
-
-                // First pass: importance-sample positions; no rejection
-                const posTransforms = [];
-                const negTransforms = [];
-                const rk = `${n}_${l}`;
-                if (!radialCache[rk]) {
-                    const radTex = createRadialLUT(n, l, 1024);
-                    radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n, l, 1024), maxR: radTex._maxRabs || 1 };
-                }
-                const ak = `${l}_${m}`;
-                if (!angularCache[ak]) {
-                    angularCache[ak] = createAngularInvTables(l, m, 256, 256);
-                }
-                const radialInvCdf = radialCache[rk].invCdf;
-                const radialArray = radialInvCdf._cpuArray;
-                const radialSize = radialInvCdf.image.width;
-                const { invThetaData, invPhiData, thetaSize, phiSize } = angularCache[ak];
-                const radMax = radialCache[rk].maxR || 1;
-                const angMax = Math.sqrt(estimateMaxAngular2(l, m));
-                const ampMax = Math.max(1e-6, radMax * angMax);
-                for (let i = 0; i < numPoints; i++) {
-                    const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-                    const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-                    const rNorm = radialArray[rIdx * 4];
-                    const r = rNorm * maxRadius;
-                    const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-                    const thetaNorm = invThetaData[thetaIdx * 4];
-                    const theta = thetaNorm * Math.PI;
-                    const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-                    const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-                    const phiNorm = invPhiData[phiDataIdx];
-                    const phi = phiNorm * 2 * Math.PI;
-                    const sinTheta = Math.sin(theta);
-                    const cosTheta = Math.cos(theta);
-                    const cosPhi = Math.cos(phi);
-                    const sinPhi = Math.sin(phi);
-                    const x = r * sinTheta * cosPhi;
-                    const y = r * sinTheta * sinPhi;
-                    const z = r * cosTheta;
-                    const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
-                    const scale = 0.55 + 0.45 * Math.min(1, Math.abs(psi) / ampMax);
-                    if (psi >= 0) posTransforms.push({ x, y, z, scale }); else negTransforms.push({ x, y, z, scale });
-                }
-
-                // Choose geometry and materials based on impostor mode (only for instanced mode)
-                const useImpostor = impostorEnabled && renderMode === 'instanced';
-                const useGeo = useImpostor ? quadGeo : sphereGeo;
-                const useMatPos = useImpostor ? matPosBillboard : matPos;
-                const useMatNeg = useImpostor ? matNegBillboard : matNeg;
-
-                const posCount = Math.max(1, posTransforms.length);
-                const negCount = Math.max(1, negTransforms.length);
-                const posMesh = new THREE.InstancedMesh(useGeo, useMatPos, posCount);
-                const negMesh = new THREE.InstancedMesh(useGeo, useMatNeg, negCount);
-                // mark meshes so global cleanup will remove them when changing modes
-                posMesh.userData = posMesh.userData || {};
-                negMesh.userData = negMesh.userData || {};
-                posMesh.userData.isOrbital = true;
-                negMesh.userData.isOrbital = true;
-
-                // For impostors, add instance attributes for position and scale
-                if (useImpostor) {
-                    // Positive impostors
-                    const posPositions = new Float32Array(posCount * 3);
-                    const posScales = new Float32Array(posCount);
-                    for (let i = 0; i < posTransforms.length; i++) {
-                        const t = posTransforms[i];
-                        posPositions[i*3] = t.x;
-                        posPositions[i*3+1] = t.y;
-                        posPositions[i*3+2] = t.z;
-                        posScales[i] = t.scale;
-                    }
-                    // If empty, keep one dummy instance scaled to 0
-                    if (posTransforms.length === 0) {
-                        posPositions[0] = 0.0; posPositions[1] = 0.0; posPositions[2] = 0.0;
-                        posScales[0] = 0.0;
-                    }
-                    posMesh.geometry.setAttribute('instancePosition', new THREE.InstancedBufferAttribute(posPositions, 3));
-                    posMesh.geometry.setAttribute('instanceScale', new THREE.InstancedBufferAttribute(posScales, 1));
-
-                    // Negative impostors
-                    const negPositions = new Float32Array(negCount * 3);
-                    const negScales = new Float32Array(negCount);
-                    for (let i = 0; i < negTransforms.length; i++) {
-                        const t = negTransforms[i];
-                        negPositions[i*3] = t.x;
-                        negPositions[i*3+1] = t.y;
-                        negPositions[i*3+2] = t.z;
-                        negScales[i] = t.scale;
-                    }
-                    if (negTransforms.length === 0) {
-                        negPositions[0] = 0.0; negPositions[1] = 0.0; negPositions[2] = 0.0;
-                        negScales[0] = 0.0;
-                    }
-                    negMesh.geometry.setAttribute('instancePosition', new THREE.InstancedBufferAttribute(negPositions, 3));
-                    negMesh.geometry.setAttribute('instanceScale', new THREE.InstancedBufferAttribute(negScales, 1));
-                } else {
-                    // For spheres, use the standard instance matrix approach
-                    if (posTransforms.length === 0) {
-                        dummyObject3D.position.set(0,0,0);
-                        dummyObject3D.scale.setScalar(0);
-                        dummyObject3D.updateMatrix();
-                        posMesh.setMatrixAt(0, dummyObject3D.matrix);
-                    } else {
-                        posTransforms.forEach((t, i) => {
-                            dummyObject3D.position.set(t.x, t.y, t.z);
-                            dummyObject3D.scale.setScalar(t.scale);
-                            dummyObject3D.updateMatrix();
-                            posMesh.setMatrixAt(i, dummyObject3D.matrix);
-                        });
-                    }
-                    if (negTransforms.length === 0) {
-                        dummyObject3D.position.set(0,0,0);
-                        dummyObject3D.scale.setScalar(0);
-                        dummyObject3D.updateMatrix();
-                        negMesh.setMatrixAt(0, dummyObject3D.matrix);
-                    } else {
-                        negTransforms.forEach((t, i) => {
-                            dummyObject3D.position.set(t.x, t.y, t.z);
-                            dummyObject3D.scale.setScalar(t.scale);
-                            dummyObject3D.updateMatrix();
-                            negMesh.setMatrixAt(i, dummyObject3D.matrix);
-                        });
-                    }
-                }
-                posMesh.instanceMatrix.needsUpdate = true;
-                negMesh.instanceMatrix.needsUpdate = true;
-
-                const group = new THREE.Group();
-                group.add(posMesh);
-                group.add(negMesh);
-                // mark group for cleanup as well
-                group.userData = group.userData || {};
-                group.userData.isOrbital = true;
-                currentOrbital = group;
-                scene.add(group);
-                // Store capacity metadata for in-place updates
-                currentOrbital._posCapacity = posMesh.count;
-                currentOrbital._negCapacity = negMesh.count;
-                currentOrbital._lastConfig = { n, l, m, numPoints };
-            }
-
-            function scheduleRegeneration(delay = 60) {
-                if (debounceTimer) clearTimeout(debounceTimer);
-                debounceTimer = setTimeout(regenerateOrbitalGeometry, delay);
-            }
-
-            // In-place resampling without reallocating meshes (called each frame when not paused)
-            function resampleOrbitalInPlace() {
-                // WebGPU now performs sampling in a compute pass; nothing to do here
-                if (renderMode === 'webgpu') { return; }
-                // GPU mode: re-render samples into the target and update points texture
-                if (renderMode === 'gpu') {
-                    const { n: gpuN, l: gpuL, m: gpuM } = currentOrbitalData;
-                    const gpuDesiredPoints = parseInt(densitySlider.value);
-                    // If config changed, regenerate geometry
-                    const gpuSameConfig = currentOrbital && currentOrbital._lastConfig && currentOrbital._lastConfig.n === gpuN && currentOrbital._lastConfig.l === gpuL && currentOrbital._lastConfig.m === gpuM && currentOrbital._lastConfig.numPoints === gpuDesiredPoints;
-                    const rt = renderGPUSamples(gpuN, gpuL, gpuM, gpuDesiredPoints);
-                    if (!rt) {
-                        // GPU mode failed, regenerate with the new mode
-                        regenerateOrbitalGeometry(gpuN, gpuL, gpuM, gpuDesiredPoints);
-                        return;
-                    }
-                    gpuSampleTarget = rt;
-
-                    // Ensure old orbital objects are removed before adding/updating GPU mesh
-                    scene.children.slice().forEach(child => {
-                        if (child.userData && child.userData.isOrbital) {
-                            if (child !== gpuSampleMesh) {
-                                child.geometry?.dispose?.();
-                                child.material?.dispose?.();
-                                scene.remove(child);
-                            }
-                        }
-                    });
-
-                    if (gpuSampleMesh) {
-                        gpuSampleMesh.material.uniforms.uSamples.value = rt.texture;
-                        currentOrbital._lastConfig = { n: gpuN, l: gpuL, m: gpuM, numPoints: gpuDesiredPoints };
-                    } else {
-                        // create mesh if missing
-                        gpuSampleMesh = createGPUPointsMesh(rt, gpuDesiredPoints);
-                        gpuSampleMesh.userData = gpuSampleMesh.userData || {};
-                        gpuSampleMesh.userData.isOrbital = true;
-                        scene.add(gpuSampleMesh);
-                        currentOrbital = gpuSampleMesh;
-                        currentOrbital._lastConfig = { n: gpuN, l: gpuL, m: gpuM, numPoints: gpuDesiredPoints };
-                    }
-                    return;
-                }
-
-                // Points mode: resample the buffer geometry positions and colors
-                if (renderMode === 'points') {
-                    if (!currentOrbital || currentOrbital.type !== 'Points') return;
-                    const { n: pointsN, l: pointsL, m: pointsM } = currentOrbitalData;
-                    const pointsDesiredPoints = parseInt(densitySlider.value);
-                    const pointsSameConfig = currentOrbital._lastConfig && currentOrbital._lastConfig.n === pointsN && currentOrbital._lastConfig.l === pointsL && currentOrbital._lastConfig.m === pointsM && currentOrbital._lastConfig.numPoints === pointsDesiredPoints;
-                    if (!pointsSameConfig) {
-                        regenerateOrbitalGeometry();
-                        return;
-                    }
-                    
-                    const geom = currentOrbital.geometry;
-                    const posArr = geom.getAttribute('position').array;
-                    const colArr = geom.getAttribute('aColor').array;
-                    const numPoints = posArr.length / 3;
-                    
-                    if (!adaptiveEnabled) {
-                        // Full refresh for points mode using importance sampling
-                        const rk = `${pointsN}_${pointsL}`;
-                        const ak = `${pointsL}_${pointsM}`;
-                        
-                        // Ensure LUT caches exist
-                        if (!radialCache[rk]) {
-                            radialCache[rk] = { 
-                                radial: createRadialLUT(pointsN, pointsL, 1024), 
-                                invCdf: createRadialInvCDF(pointsN, pointsL, 1024) 
-                            };
-                        }
-                        if (!angularCache[ak]) {
-                            angularCache[ak] = createAngularInvTables(pointsL, pointsM, 256, 256);
-                        }
-                        
-                        const radialInvCdf = radialCache[rk].invCdf;
-                        const { invThetaData, invPhiData, thetaSize, phiSize } = angularCache[ak];
-                        const radialArray = radialInvCdf._cpuArray;
-                        const radialSize = radialInvCdf.image.width;
-                        
-                        // Use importance sampling - every sample is guaranteed to be accepted
-                        for (let i = 0; i < numPoints; i++) {
-                            const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-                            
-                            // Sample radius from radial inverse CDF
-                            const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-                            const rNorm = radialArray[rIdx * 4]; // normalized r in [0,1]
-                            const r = rNorm * maxRadius;
-                            
-                            // Sample theta from angular inverse CDF
-                            const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-                            const thetaNorm = invThetaData[thetaIdx * 4]; // normalized theta in [0,1]
-                            const theta = thetaNorm * Math.PI;
-                            
-                            // Sample phi from conditional phi inverse CDF (given theta)
-                            const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-                            const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-                            const phiNorm = invPhiData[phiDataIdx]; // normalized phi in [0,1]
-                            const phi = phiNorm * 2 * Math.PI;
-                            
-                            // Convert to Cartesian coordinates
-                            const sinTheta = Math.sin(theta);
-                            const cosTheta = Math.cos(theta);
-                            const cosPhi = Math.cos(phi);
-                            const sinPhi = Math.sin(phi);
-                            const x = r * sinTheta * cosPhi;
-                            const y = r * sinTheta * sinPhi;
-                            const z = r * cosTheta;
-                            
-                            // Get wave function value for color
-                            const psi = getWaveFunctionValue(pointsN, pointsL, pointsM, r, theta, phi);
-                            const c = psi >= 0 ? colorPositive : colorNegative;
-                            
-                            // Store position and color
-                            const idx = i * 3;
-                            posArr[idx] = x; posArr[idx+1] = y; posArr[idx+2] = z;
-                            colArr[idx] = c.r; colArr[idx+1] = c.g; colArr[idx+2] = c.b;
-                            // Update amplitude
-                            const psiAttr = geom.getAttribute('aPsi');
-                            psiAttr.array[i] = psi;
-                        }
-                        geom.getAttribute('aPsi').needsUpdate = true;
-                    } else {
-                        // Adaptive mode for points: update random subset using importance sampling
-                        const rk = `${pointsN}_${pointsL}`;
-                        const ak = `${pointsL}_${pointsM}`;
-                        
-                        // Ensure LUT caches exist
-                        if (!radialCache[rk]) {
-                            radialCache[rk] = { 
-                                radial: createRadialLUT(pointsN, pointsL, 1024), 
-                                invCdf: createRadialInvCDF(pointsN, pointsL, 1024) 
-                            };
-                        }
-                        if (!angularCache[ak]) {
-                            angularCache[ak] = createAngularInvTables(pointsL, pointsM, 256, 256);
-                        }
-                        
-                        const radialInvCdf = radialCache[rk].invCdf;
-                        const { invThetaData, invPhiData, thetaSize, phiSize } = angularCache[ak];
-                        const radialArray = radialInvCdf._cpuArray;
-                        const radialSize = radialInvCdf.image.width;
-                        
-                        const updates = Math.max(1, Math.floor(numPoints * SUBSET_RESAMPLE_FRACTION));
-                        
-                        // Use importance sampling for adaptive updates - always guaranteed success
-                        for (let i = 0; i < updates; i++) {
-                            const idx = (Math.random() * numPoints) | 0;
-                            const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-                            
-                            // Sample using importance sampling
-                            const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-                            const rNorm = radialArray[rIdx * 4];
-                            const r = rNorm * maxRadius;
-                            
-                            const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-                            const thetaNorm = invThetaData[thetaIdx * 4];
-                            const theta = thetaNorm * Math.PI;
-                            
-                            const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-                            const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-                            const phiNorm = invPhiData[phiDataIdx];
-                            const phi = phiNorm * 2 * Math.PI;
-                            
-                            const sinTheta = Math.sin(theta);
-                            const cosTheta = Math.cos(theta);
-                            const cosPhi = Math.cos(phi);
-                            const sinPhi = Math.sin(phi);
-                            const x = r * sinTheta * cosPhi;
-                            const y = r * sinTheta * sinPhi;
-                            const z = r * cosTheta;
-                            
-                            const psi = getWaveFunctionValue(pointsN, pointsL, pointsM, r, theta, phi);
-                            const c = psi >= 0 ? colorPositive : colorNegative;
-                            
-                            const posIdx = idx * 3;
-                            posArr[posIdx] = x; posArr[posIdx+1] = y; posArr[posIdx+2] = z;
-                            colArr[posIdx] = c.r; colArr[posIdx+1] = c.g; colArr[posIdx+2] = c.b;
-                            const psiAttr = geom.getAttribute('aPsi');
-                            psiAttr.array[idx] = psi;
-                        }
-                        
-                        // Since we're using importance sampling, acceptance rate is always 100%
-                        currentOrbital._prevAcceptRatio = 1.0;
-                        adaptiveFrame++;
-                    }
-                    
-                    geom.getAttribute('position').needsUpdate = true;
-                    geom.getAttribute('aColor').needsUpdate = true;
-                    geom.getAttribute('aPsi').needsUpdate = true;
-                    return;
-                }
-
-                if (!currentOrbital || currentOrbital.type !== 'Group') return;
-                const { n, l, m } = currentOrbitalData;
-                const desiredPoints = parseInt(densitySlider.value);
-                const sameConfig = currentOrbital._lastConfig && currentOrbital._lastConfig.n === n && currentOrbital._lastConfig.l === l && currentOrbital._lastConfig.m === m && currentOrbital._lastConfig.numPoints === desiredPoints;
-                if (!sameConfig) {
-                    regenerateOrbitalGeometry();
-                    return;
-                }
-                const posMesh = currentOrbital.children[0];
-                const negMesh = currentOrbital.children[1];
-                const posCapacity = currentOrbital._posCapacity;
-                const negCapacity = currentOrbital._negCapacity;
-                const totalCapacity = posCapacity + negCapacity;
-                if (!adaptiveEnabled) {
-                    // Full refresh using importance sampling (no rejection)
-                    let posFilled = 0, negFilled = 0, attempts = 0;
-                    const rk = `${n}_${l}`; const ak = `${l}_${m}`;
-                    if (!radialCache[rk]) { const radTex = createRadialLUT(n, l, 1024); radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n, l, 1024), maxR: radTex._maxRabs || 1 }; }
-                    if (!angularCache[ak]) { angularCache[ak] = createAngularInvTables(l, m, 256, 256); }
-                    const radialInvCdf = radialCache[rk].invCdf; const radialArray = radialInvCdf._cpuArray; const radialSize = radialInvCdf.image.width;
-                    const { invThetaData, invPhiData, thetaSize, phiSize } = angularCache[ak];
-                    const radMax = radialCache[rk].maxR || 1; const angMax = Math.sqrt(estimateMaxAngular2(l, m)); const ampMax = Math.max(1e-6, radMax * angMax);
-                    const maxAttempts = totalCapacity * 8;
-                    while ((posFilled < posCapacity || negFilled < negCapacity) && attempts < maxAttempts) {
-                        attempts++;
-                        const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-                        const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-                        const rNorm = radialArray[rIdx * 4];
-                        const r = rNorm * maxRadius;
-                        const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-                        const thetaNorm = invThetaData[thetaIdx * 4];
-                        const theta = thetaNorm * Math.PI;
-                        const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-                        const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-                        const phiNorm = invPhiData[phiDataIdx];
-                        const phi = phiNorm * 2 * Math.PI;
-                        const sinTheta = Math.sin(theta);
-                        const cosTheta = Math.cos(theta);
-                        const cosPhi = Math.cos(phi);
-                        const x = r * sinTheta * cosPhi;
-                        const y = r * sinTheta * Math.sin(phi);
-                        const z = r * cosTheta;
-                        const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
-                        const scale = 0.55 + 0.45 * Math.min(1, Math.abs(psi) / ampMax);
-                        dummyObject3D.position.set(x, y, z);
-                        dummyObject3D.scale.setScalar(scale);
-                        dummyObject3D.updateMatrix();
-                        if (psi >= 0 && posFilled < posCapacity) {
-                            posMesh.setMatrixAt(posFilled++, dummyObject3D.matrix);
-                        } else if (psi < 0 && negFilled < negCapacity) {
-                            negMesh.setMatrixAt(negFilled++, dummyObject3D.matrix);
-                        }
-                    }
-                    // Hide remainder
-                    if (posFilled < posCapacity) {
-                        dummyObject3D.scale.setScalar(0); dummyObject3D.updateMatrix();
-                        for (let i = posFilled; i < posCapacity; i++) posMesh.setMatrixAt(i, dummyObject3D.matrix);
-                    }
-                    if (negFilled < negCapacity) {
-                        dummyObject3D.scale.setScalar(0); dummyObject3D.updateMatrix();
-                        for (let i = negFilled; i < negCapacity; i++) negMesh.setMatrixAt(i, dummyObject3D.matrix);
-                    }
-                    posMesh.instanceMatrix.needsUpdate = true;
-                    negMesh.instanceMatrix.needsUpdate = true;
-                    return;
-                }
-
-                // ADAPTIVE MODE: incremental subset update
-                if (!cachedMaxPsi2 || adaptiveFrame % ADAPTIVE_MAX_RECALC_INTERVAL === 0) {
-                    const fresh = estimateMaxPsi2(n, l, m, 600);
-                    if (emaMaxPsi2 == null) emaMaxPsi2 = fresh; else emaMaxPsi2 = EMA_ALPHA * fresh + (1 - EMA_ALPHA) * emaMaxPsi2;
-                    cachedMaxPsi2 = emaMaxPsi2;
-                }
-                const maxPsi2 = cachedMaxPsi2 || 1e-6;
-                const posUpdates = Math.max(1, Math.floor(posCapacity * SUBSET_RESAMPLE_FRACTION));
-                const negUpdates = Math.max(1, Math.floor(negCapacity * SUBSET_RESAMPLE_FRACTION));
-
-                let attempts = 0, accepted = 0;
-                function updateOne(targetMesh, isPositive, index) {
-                    // attempt loop per slot to match sign, sampling via inverse CDFs
-                    const ATTEMPT_LIMIT = 40;
-                    const rk = `${n}_${l}`; const ak = `${l}_${m}`;
-                    if (!radialCache[rk]) { const radTex = createRadialLUT(n, l, 1024); radialCache[rk] = { radial: radTex, invCdf: createRadialInvCDF(n, l, 1024), maxR: radTex._maxRabs || 1 }; }
-                    if (!angularCache[ak]) { angularCache[ak] = createAngularInvTables(l, m, 256, 256); }
-                    const radialInvCdf = radialCache[rk].invCdf; const radialArray = radialInvCdf._cpuArray; const radialSize = radialInvCdf.image.width;
-                    const { invThetaData, invPhiData, thetaSize, phiSize } = angularCache[ak];
-                    const radMax = radialCache[rk].maxR || 1; const angMax = Math.sqrt(estimateMaxAngular2(l, m)); const ampMax = Math.max(1e-6, radMax * angMax);
-                    for (let a = 0; a < ATTEMPT_LIMIT; a++) {
-                        attempts++;
-                        const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-                        const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-                        const rNorm = radialArray[rIdx * 4];
-                        const r = rNorm * maxRadius;
-                        const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-                        const thetaNorm = invThetaData[thetaIdx * 4];
-                        const theta = thetaNorm * Math.PI;
-                        const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-                        const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-                        const phiNorm = invPhiData[phiDataIdx];
-                        const phi = phiNorm * 2 * Math.PI;
-                        const sinTheta = Math.sin(theta);
-                        const cosTheta = Math.cos(theta);
-                        const cosPhi = Math.cos(phi);
-                        const x = r * sinTheta * cosPhi;
-                        const y = r * sinTheta * Math.sin(phi);
-                        const z = r * cosTheta;
-                        const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
-                        if ((isPositive && psi < 0) || (!isPositive && psi >= 0)) continue; // sign mismatch
-                        const scale = 0.55 + 0.45 * Math.min(1, Math.abs(psi) / ampMax);
-                        dummyObject3D.position.set(x, y, z);
-                        dummyObject3D.scale.setScalar(scale);
-                        dummyObject3D.updateMatrix();
-                        targetMesh.setMatrixAt(index, dummyObject3D.matrix);
-                        accepted++;
-                        break;
-                    }
-                }
-                for (let i = 0; i < posUpdates; i++) updateOne(posMesh, true, (Math.random() * posCapacity) | 0);
-                for (let i = 0; i < negUpdates; i++) updateOne(negMesh, false, (Math.random() * negCapacity) | 0);
-                posMesh.instanceMatrix.needsUpdate = true;
-                negMesh.instanceMatrix.needsUpdate = true;
-                currentOrbital._prevAcceptRatio = accepted > 0 ? (accepted / attempts) : currentOrbital._prevAcceptRatio;
-                adaptiveFrame++;
-            }
-
-             // --- FPS Counter Logic ---
-            let prevTime = performance.now();
-            let frames = 0;
-            const fpsCounter = document.getElementById('fps-counter');
-
-            // --- Event Listeners and Initial State ---
-            const buttons = document.querySelectorAll('#orbital-panel .orbital-button');
-            const densitySlider = document.getElementById('density-slider');
-            const densityValueLabel = document.getElementById('density-value');
-            const pauseButton = document.getElementById('pause-toggle');
-            const adaptiveButton = document.getElementById('adaptive-toggle');
-            const modeButton = document.getElementById('mode-toggle');
-            const impostorButton = document.getElementById('impostor-toggle');
-            const cullButton = document.getElementById('cull-toggle');
-            const clearButton = document.getElementById('clear-button');
-            const screenshotButton = document.getElementById('screenshot-button'); // new
-            // Orientation buttons
-            const snapXBtn = document.getElementById('snap-x');
-            const snapYBtn = document.getElementById('snap-y');
-            const snapZBtn = document.getElementById('snap-z');
-            const resetOrientBtn = document.getElementById('reset-orient');
-
-            // Function to update mode button text (can be called when mode changes due to fallback)
-            function updateModeButtonText() {
-                let label = 'Mode: Instanced';
-                if (renderMode === 'points') label = 'Mode: Points';
-                else if (renderMode === 'gpu') label = 'Mode: GPU (WebGL)';
-                else if (renderMode === 'webgpu') label = webgpuSupported ? 'Mode: WebGPU' : 'Mode: WebGPU (No Support)';
-                modeButton.textContent = label;
-            }
-
-            // Initialize button states
-            pauseButton.textContent = paused ? 'Resume' : 'Pause';
-            adaptiveButton.textContent = adaptiveEnabled ? 'Adaptive On' : 'Adaptive Off';
-            updateModeButtonText();
-            impostorButton.textContent = impostorEnabled ? 'Impostor: On' : 'Impostor: Off';
-            cullButton.textContent = occlusionEnabled ? 'Cull: On' : 'Cull: Off';
-
-            buttons.forEach(button => {
-                button.addEventListener('click', (event) => {
-                    buttons.forEach(btn => btn.classList.remove('active'));
-                    event.target.classList.add('active');
-                    const orbitalType = event.target.dataset.orbital;
-                    switch (orbitalType) {
-                        case '1s': currentOrbitalData = { n: 1, l: 0, m: 0 }; break;
-                        case '2s': currentOrbitalData = { n: 2, l: 0, m: 0 }; break;
-                        case '3s': currentOrbitalData = { n: 3, l: 0, m: 0 }; break;
-                        case '2p_x': currentOrbitalData = { n: 2, l: 1, m: 1 }; break;
-                        case '2p_y': currentOrbitalData = { n: 2, l: 1, m: -1 }; break;
-                        case '2p_z': currentOrbitalData = { n: 2, l: 1, m: 0 }; break;
-                        case '3p_x': currentOrbitalData = { n: 3, l: 1, m: 1 }; break;
-                        case '3p_y': currentOrbitalData = { n: 3, l: 1, m: -1 }; break;
-                        case '3p_z': currentOrbitalData = { n: 3, l: 1, m: 0 }; break;
-                        case '3d_z2': currentOrbitalData = { n: 3, l: 2, m: 0 }; break;
-                        case '3d_x2-y2': currentOrbitalData = { n: 3, l: 2, m: 2 }; break;
-                        case '3d_xy': currentOrbitalData = { n: 3, l: 2, m: -2 }; break;
-                        case '3d_xz': currentOrbitalData = { n: 3, l: 2, m: 1 }; break;
-                        case '3d_yz': currentOrbitalData = { n: 3, l: 2, m: -1 }; break;
-                        case '4s': currentOrbitalData = { n: 4, l: 0, m: 0 }; break;
-                        case '4p_x': currentOrbitalData = { n: 4, l: 1, m: 1 }; break;
-                        case '4p_y': currentOrbitalData = { n: 4, l: 1, m: -1 }; break;
-                        case '4p_z': currentOrbitalData = { n: 4, l: 1, m: 0 }; break;
-                        case '4d_z2': currentOrbitalData = { n: 4, l: 2, m: 0 }; break;
-                        case '4d_x2-y2': currentOrbitalData = { n: 4, l: 2, m: 2 }; break;
-                        case '4d_xy': currentOrbitalData = { n: 4, l: 2, m: -2 }; break;
-                        case '4d_xz': currentOrbitalData = { n: 4, l: 2, m: 1 }; break;
-                        case '4d_yz': currentOrbitalData = { n: 4, l: 2, m: -1 }; break;
-                    }
-                    scheduleRegeneration(80);
-                });
-            });
-
-            densitySlider.addEventListener('input', (event) => {
-                const newDensity = parseInt(event.target.value);
-                densityValueLabel.textContent = newDensity.toLocaleString();
-                scheduleRegeneration(120);
-            });
-
-            pauseButton.addEventListener('click', () => {
-                paused = !paused;
-                pauseButton.textContent = paused ? 'Resume' : 'Pause';
-            });
-            adaptiveButton.addEventListener('click', () => {
-                adaptiveEnabled = !adaptiveEnabled;
-                adaptiveButton.textContent = adaptiveEnabled ? 'Adaptive On' : 'Adaptive Off';
-                // Force regeneration to reset caches
-                cachedMaxPsi2 = null;
-                scheduleRegeneration(10);
-            });
-            modeButton.addEventListener('click', async () => {
-                // Cycle instanced -> points -> gpu -> webgpu -> instanced
-                if (renderMode === 'instanced') renderMode = 'points';
-                else if (renderMode === 'points') renderMode = 'gpu';
-                else if (renderMode === 'gpu') renderMode = 'webgpu';
-                else renderMode = 'instanced';
-                // Initialize WebGPU lazily
-                if (renderMode === 'webgpu' && !webgpu.initialized) {
-                    const ok = await initWebGPU();
-                    if (!ok) {
-                        console.warn('Falling back: WebGPU unavailable');
-                        renderMode = 'instanced';
-                    }
-                }
-                // Hide/show canvases
-                if (webgpu.canvas) {
-                    const on = (renderMode === 'webgpu');
-                    webgpu.canvas.style.display = on ? 'block' : 'none';
-                    webgpu.canvas.style.pointerEvents = on ? 'auto' : 'none';
-                }
-                // Keep WebGL canvas in DOM to capture controls when not in WebGPU
-                const onWebGPU = (renderMode === 'webgpu');
-                renderer.domElement.style.opacity = onWebGPU ? '0' : '1';
-                renderer.domElement.style.pointerEvents = onWebGPU ? 'none' : 'auto';
-                updateModeButtonText();
-                // Update impostor availability
-                if (renderMode === 'instanced') {
-                    impostorButton.disabled = false;
-                    impostorButton.textContent = impostorEnabled ? 'Impostor: On' : 'Impostor: Off';
-                } else if (renderMode === 'webgpu') { // no impostors
-                    impostorButton.disabled = true;
-                    impostorButton.textContent = 'Impostor: N/A';
-                } else {
-                    impostorButton.disabled = true;
-                    impostorButton.textContent = 'Impostor: N/A';
-                }
-                scheduleRegeneration(30);
-            });
-
-            // Cull toggle
-            cullButton.addEventListener('click', () => {
-                occlusionEnabled = !occlusionEnabled;
-                cullButton.textContent = occlusionEnabled ? 'Cull: On' : 'Cull: Off';
-                // Force regeneration so materials respect depthTest/depthWrite
-                scheduleRegeneration(20);
-            });
-
-            // Impostor toggle
-            impostorButton.addEventListener('click', () => {
-                impostorEnabled = !impostorEnabled;
-                impostorButton.textContent = impostorEnabled ? 'Impostor: On' : 'Impostor: Off';
-                // Force regeneration to switch between spheres and quads
-                scheduleRegeneration(20);
-            });
-
-            // Clear button
-            function clearOrbital() {
-                // remove orbital-marked children
-                scene.children.slice().forEach(child => {
-                    if (child.userData && child.userData.isOrbital) {
-                        if (child.type === 'Group') {
-                            child.children.forEach(ch => { ch.geometry?.dispose?.(); ch.material?.dispose?.(); });
-                        } else {
-                            child.geometry?.dispose?.();
-                            child.material?.dispose?.();
-                        }
-                        scene.remove(child);
-                    }
-                });
-                // dispose GPU resources
-                if (gpuSampleMesh) {
-                    gpuSampleMesh.geometry?.dispose?.();
-                    gpuSampleMesh.material?.dispose?.();
-                    scene.remove(gpuSampleMesh);
-                    gpuSampleMesh = null;
-                }
-                if (gpuSampleTarget) {
-                    gpuSampleTarget.dispose?.();
-                    gpuSampleTarget = null;
-                }
-                // clear cached current orbital reference
-                currentOrbital = null;
-            }
-            clearButton.addEventListener('click', () => {
-                clearOrbital();
-            });
-
-            // Screenshot button: render with transparent clear and download PNG
-            screenshotButton.addEventListener('click', () => {
-                takeScreenshot();
-            });
-
-            // takes a transparent PNG of the current view and triggers a download
-            function takeScreenshot(filename = 'orbital_screenshot.png') {
-                // store previous clear color & alpha
-                const prevColor = renderer.getClearColor(new THREE.Color()).getHex();
-                const prevAlpha = renderer.getClearAlpha();
-
-                // render transparent background
-                renderer.setClearColor(0x000000, 0);
-                renderer.render(scene, camera);
-
-                // get PNG data
-                const dataURL = renderer.domElement.toDataURL('image/png');
-
-                // restore previous clear color/alpha
-                renderer.setClearColor(prevColor, prevAlpha);
-
-                // trigger download
-                const a = document.createElement('a');
-                a.href = dataURL;
-                a.download = filename;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-            }
-            // Set initial state
-            document.querySelector('[data-orbital="1s"]').classList.add('active');
-
-            // Orientation snaps
-            const initialCamPos = new THREE.Vector3().copy(camera.position);
-            const initialTarget = new THREE.Vector3(0,0,0);
-            // Smooth camera tweening for OrbitControls
-            let camTween = null; let isTransitioning = false;
-            function easeInOutCubic(t){ return t<0.5? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
-            function startCameraTransition(toPos, toTarget, toUp, duration=650){
-                camTween = {
-                    t0: performance.now(), dur: duration,
-                    fromPos: camera.position.clone(), toPos: toPos.clone(),
-                    fromTarget: controls.target.clone(), toTarget: toTarget.clone(),
-                    fromUp: camera.up.clone(), toUp: toUp.clone(),
-                };
-                isTransitioning = true; controls.enabled = false;
-            }
-            // Smooth transition for WebGPU (yaw/pitch/distance)
-            let webgpuTween = null;
-            function shortestAngle(from, to){ let d = to - from; while (d > Math.PI) d -= 2*Math.PI; while (d < -Math.PI) d += 2*Math.PI; return from + d; }
-            function startWebGPUTransition(toYaw, toPitch, toDistance, duration=650){
-                if (!webgpu) return;
-                const from = webgpu.camera;
-                const yawDst = shortestAngle(from.yaw, toYaw);
-                webgpuTween = { t0: performance.now(), dur: duration, fromYaw: from.yaw, toYaw: yawDst, fromPitch: from.pitch, toPitch, fromDist: from.distance, toDist: toDistance };
-            }
-            function computeSnap(axis){
-                const target = controls.target.clone();
-                const dist = camera.position.clone().sub(target).length() || 20;
-                let up = new THREE.Vector3(0,1,0);
-                let pos = new THREE.Vector3();
-                if (axis === 'x') { pos.set(dist, 0, 0); up.set(0,1,0); }
-                else if (axis === 'y') { pos.set(0, dist, 0); up.set(0,0,1); }
-                else { pos.set(0, 0, dist); up.set(0,1,0); }
-                return { pos: target.clone().add(pos), target, up, dist };
-            }
-            function snapTo(axis){
-                const cfg = computeSnap(axis);
-                if (renderMode === 'webgpu'){
-                    // Map axes to yaw/pitch for WebGPU camera model
-                    const YAW_X = Math.PI * 0.5, YAW_Z = 0.0; // +Z is yaw=0
-                    const PITCH_FLAT = 0.0, PITCH_Y = Math.PI * 0.5;
-                    let yaw = YAW_Z, pitch = PITCH_FLAT;
-                    if (axis==='x'){ yaw = YAW_X; pitch = PITCH_FLAT; }
-                    else if (axis==='y'){ yaw = YAW_Z; pitch = PITCH_Y; }
-                    else { yaw = YAW_Z; pitch = PITCH_FLAT; }
-                    startWebGPUTransition(yaw, pitch, cfg.dist);
-                    // Also align the Three camera for overlay consistency
-                    startCameraTransition(cfg.pos, cfg.target, cfg.up, 650);
-                } else {
-                    startCameraTransition(cfg.pos, cfg.target, cfg.up, 650);
-                }
-            }
-            function resetOrientation(){
-                if (renderMode === 'webgpu'){
-                    startWebGPUTransition(0.0, 0.0, webgpu.camera.distance, 650);
-                }
-                startCameraTransition(initialCamPos, initialTarget, new THREE.Vector3(0,1,0), 650);
-            }
-            snapXBtn.addEventListener('click', ()=> snapTo('x'));
-            snapYBtn.addEventListener('click', ()=> snapTo('y'));
-            snapZBtn.addEventListener('click', ()=> snapTo('z'));
-            resetOrientBtn.addEventListener('click', resetOrientation);
-            
-            // Handle window resizing (debounced)
-            let resizeTimer = null;
-            window.addEventListener('resize', () => {
-                if (resizeTimer) clearTimeout(resizeTimer);
-                resizeTimer = setTimeout(() => {
-                    const width = window.innerWidth;
-                    const height = window.innerHeight;
-                    camera.aspect = width / height;
-                    camera.updateProjectionMatrix();
-                    renderer.setSize(width, height);
-                    // keep GPU points size attenuation in sync
-                    if (gpuSampleMesh && gpuSampleMesh.material && gpuSampleMesh.material.uniforms) {
-                        const size = renderer.getSize(new THREE.Vector2());
-                        gpuSampleMesh.material.uniforms.uViewportHeight.value = size.y;
-                        gpuSampleMesh.material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
-                        gpuSampleMesh.material.uniforms.uFov.value = camera.fov;
-                    }
-                    if (pointsCache.material && pointsCache.material.uniforms) {
-                        const size = renderer.getSize(new THREE.Vector2());
-                        pointsCache.material.uniforms.uViewportHeight.value = size.y;
-                        pointsCache.material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
-                        pointsCache.material.uniforms.uFov.value = camera.fov;
-                    }
-                }, 120);
-            });
-
-            // --- Animation Loop ---
-            // Render loop (geometry only regenerated on demand)
-            const animate = () => {
-                requestAnimationFrame(animate);
-                if (!paused) {
-                    resampleOrbitalInPlace();
-                }
-                // Handle camera tween (OrbitControls camera) BEFORE render
-                if (isTransitioning && camTween) {
-                    const now = performance.now();
-                    const t = Math.min(1, (now - camTween.t0) / camTween.dur);
-                    const s = easeInOutCubic(t);
-                    const pos = camTween.fromPos.clone().lerp(camTween.toPos, s);
-                    const tgt = camTween.fromTarget.clone().lerp(camTween.toTarget, s);
-                    const up = camTween.fromUp.clone().lerp(camTween.toUp, s).normalize();
-                    camera.up.copy(up);
-                    camera.position.copy(pos);
-                    controls.target.copy(tgt);
-                    camera.lookAt(controls.target);
-                    if (t >= 1) { isTransitioning = false; camTween = null; controls.enabled = true; }
-                }
-                // Handle WebGPU camera tween BEFORE render
-                if (webgpuTween && webgpu && webgpu.camera) {
-                    const now = performance.now();
-                    const t = Math.min(1, (now - webgpuTween.t0) / webgpuTween.dur);
-                    const s = easeInOutCubic(t);
-                    webgpu.camera.yaw = webgpuTween.fromYaw + (webgpuTween.toYaw - webgpuTween.fromYaw) * s;
-                    webgpu.camera.pitch = webgpuTween.fromPitch + (webgpuTween.toPitch - webgpuTween.fromPitch) * s;
-                    webgpu.camera.distance = webgpuTween.fromDist + (webgpuTween.toDist - webgpuTween.fromDist) * s;
-                    if (t >= 1) { webgpuTween = null; }
-                }
-
-                if (renderMode !== 'webgpu') {
-                    controls.update();
-                    // Update billboard materials
-                    if (regenerateOrbitalGeometry._matPosBillboard) {
-                        regenerateOrbitalGeometry._matPosBillboard.uniforms.cameraPosition.value.copy(camera.position);
-                    }
-                    if (regenerateOrbitalGeometry._matNegBillboard) {
-                        regenerateOrbitalGeometry._matNegBillboard.uniforms.cameraPosition.value.copy(camera.position);
-                    }
-                    renderer.render(scene, camera);
-                } else {
-                    renderWebGPUFrame();
-                }
-                // Render orientation overlay (copy camera orientation)
-                axesRoot.quaternion.copy(camera.quaternion);
-                orientRenderer.render(orientScene, orientCam);
-                const currentTime = performance.now();
-                frames++;
-                if (currentTime - prevTime >= 1000) {
-                    fpsCounter.textContent = `FPS: ${frames}`;
-                    prevTime = currentTime;
-                    frames = 0;
-                }
-            };
-
-            // Initial generation
-            regenerateOrbitalGeometry();
-            // Ensure WebGPU canvas hidden if created later and mode not webgpu
-            if (webgpu.canvas && renderMode !== 'webgpu') {
-                webgpu.canvas.style.display = 'none';
-                webgpu.canvas.style.pointerEvents = 'none';
-            }
-            animate();
-        };
-
-        // (clearOrbital now lives inside onload where scene/renderer exist)
-    </script>
-    <!-- Removed duplicate module script to prevent double initialization of scene/controls -->
-    <!-- <script type="module" src="./src/main.js"></script> -->
-  </body>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script type="module" src="./src/main.js"></script>
+</body>
 </html>

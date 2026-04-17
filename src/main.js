@@ -1,291 +1,975 @@
-import { maxRadius, colors, sampling, modeLabel } from './config.js';
+import { maxRadius, colors, sampling, modeLabel, dprGate } from './config.js';
 import { getWaveFunctionValue, estimateMaxPsi2 } from './math/wave.js';
 import * as LUT from './sampling/lut.js';
 import { renderGPUSamples, createGPUPointsMesh } from './gpu/webglSampler.js';
 import { makeWebGPU, initWebGPU, ensureWebGPUParticles, renderWebGPUFrame } from './gpu/webgpuPipeline.js';
 
 const T = window.THREE;
+const APP_GUARD = '__electronOrbitalSimulatorInitialized';
 
-function hexToColor(hex) { return new T.Color(hex); }
+if (!T) {
+  throw new Error('Three.js must be loaded before src/main.js');
+}
 
-window.addEventListener('load', async () => {
-  // --- Scene ---
-  const scene = new T.Scene();
-  const camera = new T.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+if (window[APP_GUARD]) {
+  console.warn('Electron Orbital Simulator already initialized; skipping duplicate boot.');
+} else {
+  window[APP_GUARD] = true;
+  initialize();
+}
+
+function initialize() {
+  const canvasContainer = document.getElementById('canvas-container');
   const canvas = document.getElementById('orbital-canvas');
-  const context = canvas.getContext('webgl2');
-  const renderer = new T.WebGLRenderer({ canvas, context, alpha:true, preserveDrawingBuffer:true });
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  camera.position.z = 20;
-  const controls = new T.OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.dampingFactor = 0.25;
-
-  // Lights
-  scene.add(new T.AmbientLight(0xffffff, 0.5));
-  const dir = new T.DirectionalLight(0xffffff, 0.5); dir.position.set(0,1,1); scene.add(dir);
-
-  // UI Elements
-  const buttons = document.querySelectorAll('#orbital-panel .orbital-button');
+  const buttons = Array.from(document.querySelectorAll('#orbital-panel .orbital-button[data-orbital]'));
   const densitySlider = document.getElementById('density-slider');
   const densityValueLabel = document.getElementById('density-value');
   const pauseButton = document.getElementById('pause-toggle');
   const adaptiveButton = document.getElementById('adaptive-toggle');
   const modeButton = document.getElementById('mode-toggle');
+  const impostorButton = document.getElementById('impostor-toggle');
   const cullButton = document.getElementById('cull-toggle');
   const clearButton = document.getElementById('clear-button');
   const screenshotButton = document.getElementById('screenshot-button');
   const fpsCounter = document.getElementById('fps-counter');
+  const snapXButton = document.getElementById('snap-x');
+  const snapYButton = document.getElementById('snap-y');
+  const snapZButton = document.getElementById('snap-z');
+  const resetOrientButton = document.getElementById('reset-orient');
+  const orientationCanvas = document.getElementById('orientation-canvas');
 
-  // State
+  const renderer = new T.WebGLRenderer({
+    canvas,
+    alpha: true,
+    antialias: true,
+    preserveDrawingBuffer: true,
+    powerPreference: 'high-performance',
+  });
+  renderer.setClearColor(0x000000, 0);
+
+  const scene = new T.Scene();
+  const camera = new T.PerspectiveCamera(75, 1, 0.1, 1000);
+  camera.position.set(0, 0, 20);
+
+  const controls = new T.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.25;
+  controls.enableZoom = true;
+
+  scene.add(new T.AmbientLight(0xffffff, 0.55));
+  const directionalLight = new T.DirectionalLight(0xffffff, 0.55);
+  directionalLight.position.set(0, 1, 1);
+  scene.add(directionalLight);
+
+  const orientationRenderer = new T.WebGLRenderer({
+    canvas: orientationCanvas,
+    alpha: true,
+    antialias: true,
+  });
+  orientationRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  orientationRenderer.setSize(140, 140, false);
+  const orientationScene = new T.Scene();
+  const orientationCamera = new T.PerspectiveCamera(70, 1, 0.1, 20);
+  orientationCamera.position.set(0, 0, 2.4);
+  const axesRoot = new T.Object3D();
+  axesRoot.add(buildThickAxes(T));
+  orientationScene.add(axesRoot);
+
+  const colorPositive = new T.Color(colors.positive);
+  const colorNegative = new T.Color(colors.negative);
+  const tempObject = new T.Object3D();
+  const sizeVec = new T.Vector2();
+  const initialCameraPosition = camera.position.clone();
+  const initialTarget = controls.target.clone();
+  const initialUp = camera.up.clone();
+
   let currentOrbital = null;
-  let currentOrbitalData = { n: 2, l: 1, m: -1 };
-  let paused = false; let adaptiveEnabled = false; let occlusionEnabled = false; let renderMode = 'gpu';
-  let gpuRT = null; let gpuPoints = null; let gpuSupportLogged = false; let adaptiveFrame = 0;
-  const colorPositive = hexToColor(colors.positive); const colorNegative = hexToColor(colors.negative);
+  let currentOrbitalData = readOrbitalData(buttons[0]);
+  let currentMaxPsi2 = 1e-6;
+  let orbitalVisible = true;
+  let paused = false;
+  let adaptiveEnabled = false;
+  let occlusionEnabled = false;
+  let impostorEnabled = false;
+  let renderMode = 'instanced';
+  let adaptiveFrame = 0;
+  let gpuRT = null;
+  let gpuPoints = null;
+  let gpuSupportLogged = false;
+  let regenerateTimer = null;
+  let resizeTimer = null;
+  let cameraTween = null;
+  let isCameraTransitioning = false;
+  let prevFpsTime = performance.now();
+  let fpsFrames = 0;
 
-  // WebGPU
   const webgpu = makeWebGPU();
 
-  function updateModeButtonText() { modeButton.textContent = modeLabel(renderMode, !!navigator.gpu); }
-  function clearOrbital() {
-    scene.children.slice().forEach(child => { if (child.userData && child.userData.isOrbital) { child.geometry?.dispose?.(); child.material?.dispose?.(); scene.remove(child);} });
-    if (gpuPoints) { gpuPoints.geometry?.dispose?.(); gpuPoints.material?.dispose?.(); scene.remove(gpuPoints); gpuPoints=null; }
-    if (gpuRT) { gpuRT.dispose?.(); gpuRT=null; }
+  function getDensity() {
+    return parseInt(densitySlider.value, 10);
+  }
+
+  function getDesiredDpr() {
+    const nativeDpr = Math.min(window.devicePixelRatio || 1, 2);
+    return getDensity() > dprGate.HIGH_DENSITY_THRESHOLD
+      ? Math.min(nativeDpr, dprGate.MAX_DPR_HIGH)
+      : nativeDpr;
+  }
+
+  function updateDensityLabel() {
+    densityValueLabel.textContent = getDensity().toLocaleString();
+  }
+
+  function updateModeButtonText() {
+    modeButton.textContent = modeLabel(renderMode, !!navigator.gpu);
+  }
+
+  function updateAdaptiveButtonText() {
+    adaptiveButton.textContent = adaptiveEnabled ? 'Adaptive On' : 'Adaptive Off';
+  }
+
+  function updatePauseButtonText() {
+    pauseButton.textContent = paused ? 'Resume' : 'Pause';
+  }
+
+  function updateCullButtonText() {
+    cullButton.textContent = occlusionEnabled ? 'Cull: On' : 'Cull: Off';
+  }
+
+  function updateImpostorButtonState() {
+    if (renderMode === 'instanced') {
+      impostorButton.disabled = false;
+      impostorButton.textContent = impostorEnabled ? 'Impostor: On' : 'Impostor: Off';
+    } else {
+      impostorButton.disabled = true;
+      impostorButton.textContent = 'Impostor: N/A';
+    }
+  }
+
+  function updateCanvasVisibility() {
+    const webgpuActive = renderMode === 'webgpu' && webgpu.initialized;
+    if (webgpu.canvas) {
+      webgpu.canvas.style.display = webgpuActive ? 'block' : 'none';
+    }
+    renderer.domElement.style.opacity = webgpuActive ? '0' : '1';
+  }
+
+  function syncRendererSize() {
+    const width = Math.max(1, canvasContainer.clientWidth);
+    const height = Math.max(1, canvasContainer.clientHeight);
+    renderer.setPixelRatio(getDesiredDpr());
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    syncPointOrGpuUniforms(currentOrbital);
+  }
+
+  function readOrbitalData(button) {
+    return {
+      n: parseInt(button.dataset.n, 10),
+      l: parseInt(button.dataset.l, 10),
+      m: parseInt(button.dataset.m, 10),
+    };
+  }
+
+  function selectOrbital(button) {
+    buttons.forEach((candidate) => candidate.classList.toggle('active', candidate === button));
+    currentOrbitalData = readOrbitalData(button);
+    orbitalVisible = true;
+    adaptiveFrame = 0;
+    regenerate();
+  }
+
+  function scheduleRegenerate(delay = 80) {
+    if (regenerateTimer) window.clearTimeout(regenerateTimer);
+    regenerateTimer = window.setTimeout(() => {
+      regenerateTimer = null;
+      if (orbitalVisible) {
+        regenerate();
+      } else if (renderMode === 'webgpu') {
+        renderCurrentFrame(false);
+      }
+    }, delay);
+  }
+
+  function disposeObject(root) {
+    if (!root) return;
+
+    const geometries = new Set();
+    const materials = new Set();
+
+    root.traverse((node) => {
+      if (node.geometry) geometries.add(node.geometry);
+      if (Array.isArray(node.material)) {
+        node.material.forEach((material) => material && materials.add(material));
+      } else if (node.material) {
+        materials.add(node.material);
+      }
+    });
+
+    root.parent?.remove(root);
+    geometries.forEach((geometry) => geometry.dispose?.());
+    materials.forEach((material) => material.dispose?.());
+  }
+
+  function disposeCurrentOrbital() {
+    const orbitalToDispose = currentOrbital;
     currentOrbital = null;
+
+    if (orbitalToDispose) {
+      disposeObject(orbitalToDispose);
+    }
+
+    if (gpuRT) {
+      gpuRT.dispose?.();
+      gpuRT = null;
+    }
+
+    if (gpuPoints === orbitalToDispose) {
+      gpuPoints = null;
+    }
+  }
+
+  function clearOrbitalSelection() {
+    if (regenerateTimer) {
+      window.clearTimeout(regenerateTimer);
+      regenerateTimer = null;
+    }
+    orbitalVisible = false;
+    disposeCurrentOrbital();
+    adaptiveFrame = 0;
+    if (webgpu.initialized) {
+      webgpu.numPoints = 0;
+    }
+    renderCurrentFrame(false);
+  }
+
+  function supportsGpuSampling() {
+    return renderer.capabilities.isWebGL2
+      && !!(renderer.extensions.get('EXT_color_buffer_float') || renderer.extensions.get('WEBGL_color_buffer_float'));
+  }
+
+  function getSamplingTables(n, l, m) {
+    const { invCdf } = LUT.getRadial(n, l);
+    const angular = LUT.getAngular(l, m);
+    return {
+      radialArray: invCdf._cpuArray,
+      radialSize: invCdf.image.width,
+      invThetaData: angular.invThetaData,
+      invPhiData: angular.invPhiData,
+      thetaSize: angular.thetaSize,
+      phiSize: angular.phiSize,
+    };
+  }
+
+  function sampleTexture1D(data, size, u) {
+    const clamped = Math.min(Math.max(u, 0), 1) * (size - 1);
+    const i0 = Math.floor(clamped);
+    const i1 = Math.min(size - 1, i0 + 1);
+    const t = clamped - i0;
+    const a = data[i0 * 4];
+    const b = data[i1 * 4];
+    return a + (b - a) * t;
+  }
+
+  function sampleTexture2DRow(data, row, rowSize, u) {
+    const clamped = Math.min(Math.max(u, 0), 1) * (rowSize - 1);
+    const i0 = Math.floor(clamped);
+    const i1 = Math.min(rowSize - 1, i0 + 1);
+    const t = clamped - i0;
+    const base = row * rowSize * 4;
+    const a = data[base + i0 * 4];
+    const b = data[base + i1 * 4];
+    return a + (b - a) * t;
+  }
+
+  function sampleOrbitalPoint(n, l, m) {
+    const tables = getSamplingTables(n, l, m);
+    const r = sampleTexture1D(tables.radialArray, tables.radialSize, Math.random()) * maxRadius;
+    const thetaNorm = sampleTexture1D(tables.invThetaData, tables.thetaSize, Math.random());
+    const theta = thetaNorm * Math.PI;
+    const thetaRowF = Math.min(Math.max(thetaNorm * (tables.thetaSize - 1), 0), tables.thetaSize - 1);
+    const row0 = Math.floor(thetaRowF);
+    const row1 = Math.min(tables.thetaSize - 1, row0 + 1);
+    const rowT = thetaRowF - row0;
+    const phiSample = Math.random();
+    const phiNorm0 = sampleTexture2DRow(tables.invPhiData, row0, tables.phiSize, phiSample);
+    const phiNorm1 = sampleTexture2DRow(tables.invPhiData, row1, tables.phiSize, phiSample);
+    const phi = (phiNorm0 + (phiNorm1 - phiNorm0) * rowT) * 2 * Math.PI;
+
+    const sinTheta = Math.sin(theta);
+    const cosTheta = Math.cos(theta);
+    const cosPhi = Math.cos(phi);
+    const sinPhi = Math.sin(phi);
+    const x = r * sinTheta * cosPhi;
+    const y = r * sinTheta * sinPhi;
+    const z = r * cosTheta;
+    const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
+    const scale = 0.55 + 0.45 * Math.min(1, Math.abs(psi) / Math.sqrt(currentMaxPsi2));
+
+    return { x, y, z, psi, scale };
+  }
+
+  function sampleOrbitalPointWithSign(n, l, m, isPositive, attemptLimit = 64) {
+    for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
+      const sample = sampleOrbitalPoint(n, l, m);
+      if ((sample.psi >= 0) === isPositive) return sample;
+    }
+    return null;
+  }
+
+  function buildPointsMaterial() {
+    const amplitudeScale = 1 / Math.max(1e-6, Math.sqrt(currentMaxPsi2));
+    return new T.ShaderMaterial({
+      uniforms: {
+        uPointSize: { value: 0.08 },
+        uPixelRatio: { value: renderer.getPixelRatio() },
+        uViewportHeight: { value: renderer.getSize(sizeVec).y },
+        uFov: { value: camera.fov },
+        uAlphaBase: { value: 0.72 },
+        uAlphaScale: { value: amplitudeScale },
+        uSizeScale: { value: amplitudeScale },
+      },
+      vertexShader: `
+        attribute vec3 aColor;
+        attribute float aPsi;
+        uniform float uPointSize;
+        uniform float uPixelRatio;
+        uniform float uViewportHeight;
+        uniform float uFov;
+        uniform float uSizeScale;
+        varying vec3 vColor;
+        varying float vPsi;
+        void main() {
+          vColor = aColor;
+          vPsi = aPsi;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          float scale = uPixelRatio * (0.5 * uViewportHeight) / tan(0.5 * radians(uFov));
+          float sizeAmp = mix(0.65, 1.25, clamp(abs(aPsi) * uSizeScale, 0.0, 1.0));
+          gl_PointSize = uPointSize * (scale / max(0.1, -mv.z)) * sizeAmp;
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        precision highp float;
+        uniform float uAlphaBase;
+        uniform float uAlphaScale;
+        varying vec3 vColor;
+        varying float vPsi;
+        void main() {
+          vec2 uv = gl_PointCoord * 2.0 - 1.0;
+          float radius = length(uv);
+          float mask = smoothstep(1.0, 0.82, 1.0 - radius);
+          float alpha = uAlphaBase * mask * clamp(abs(vPsi) * uAlphaScale, 0.0, 1.0);
+          if (alpha <= 0.001) discard;
+          gl_FragColor = vec4(vColor, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: !occlusionEnabled,
+      depthTest: occlusionEnabled,
+      blending: T.AdditiveBlending,
+    });
+  }
+
+  function createPointsObject(numPoints) {
+    const geometry = new T.BufferGeometry();
+    geometry.setAttribute('position', new T.BufferAttribute(new Float32Array(numPoints * 3), 3));
+    geometry.setAttribute('aColor', new T.BufferAttribute(new Float32Array(numPoints * 3), 3));
+    geometry.setAttribute('aPsi', new T.BufferAttribute(new Float32Array(numPoints), 1));
+    const points = new T.Points(geometry, buildPointsMaterial());
+    points.userData = {
+      isOrbital: true,
+      renderKind: 'points',
+      numPoints,
+      lastConfig: { ...currentOrbitalData, numPoints },
+    };
+    fillPointGeometry(points.geometry, numPoints);
+    syncPointOrGpuUniforms(points);
+    return points;
+  }
+
+  function fillPointGeometry(geometry, numPoints, subsetFraction = 1) {
+    const positionAttr = geometry.getAttribute('position');
+    const colorAttr = geometry.getAttribute('aColor');
+    const psiAttr = geometry.getAttribute('aPsi');
+    const positionArray = positionAttr.array;
+    const colorArray = colorAttr.array;
+    const psiArray = psiAttr.array;
+    const updates = subsetFraction >= 1 ? numPoints : Math.max(1, Math.floor(numPoints * subsetFraction));
+    const { n, l, m } = currentOrbitalData;
+
+    for (let i = 0; i < updates; i += 1) {
+      const sampleIndex = subsetFraction >= 1 ? i : ((Math.random() * numPoints) | 0);
+      const sample = sampleOrbitalPoint(n, l, m);
+      const color = sample.psi >= 0 ? colorPositive : colorNegative;
+      const offset = sampleIndex * 3;
+
+      positionArray[offset] = sample.x;
+      positionArray[offset + 1] = sample.y;
+      positionArray[offset + 2] = sample.z;
+      colorArray[offset] = color.r;
+      colorArray[offset + 1] = color.g;
+      colorArray[offset + 2] = color.b;
+      psiArray[sampleIndex] = sample.psi;
+    }
+
+    positionAttr.needsUpdate = true;
+    colorAttr.needsUpdate = true;
+    psiAttr.needsUpdate = true;
+  }
+
+  function buildInstancedMaterial(color) {
+    return new T.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: !occlusionEnabled,
+      depthTest: occlusionEnabled,
+      blending: T.AdditiveBlending,
+    });
+  }
+
+  function buildBillboardMaterial(color) {
+    return new T.ShaderMaterial({
+      uniforms: {
+        uColor: { value: color.clone() },
+      },
+      vertexShader: `
+        attribute vec3 instancePosition;
+        attribute float instanceScale;
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          vec3 toCamera = normalize(cameraPosition - instancePosition);
+          vec3 upHint = abs(toCamera.y) > 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+          vec3 right = normalize(cross(upHint, toCamera));
+          vec3 up = normalize(cross(toCamera, right));
+          vec3 local = position * instanceScale;
+          vec3 worldPos = instancePosition + right * local.x + up * local.y;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(worldPos, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        varying vec2 vUv;
+        void main() {
+          vec2 centered = vUv * 2.0 - 1.0;
+          float radius = length(centered);
+          float alpha = smoothstep(1.0, 0.82, 1.0 - radius);
+          if (alpha <= 0.001) discard;
+          gl_FragColor = vec4(uColor, alpha * 0.9);
+        }
+      `,
+      transparent: true,
+      depthWrite: !occlusionEnabled,
+      depthTest: occlusionEnabled,
+      blending: T.AdditiveBlending,
+    });
+  }
+
+  function setInstancedSlot(mesh, slotIndex, sample, useImpostor) {
+    if (useImpostor) {
+      const positionAttr = mesh.geometry.getAttribute('instancePosition');
+      const scaleAttr = mesh.geometry.getAttribute('instanceScale');
+      const offset = slotIndex * 3;
+      positionAttr.array[offset] = sample ? sample.x : 0;
+      positionAttr.array[offset + 1] = sample ? sample.y : 0;
+      positionAttr.array[offset + 2] = sample ? sample.z : 0;
+      scaleAttr.array[slotIndex] = sample ? sample.scale : 0;
+      positionAttr.needsUpdate = true;
+      scaleAttr.needsUpdate = true;
+      return;
+    }
+
+    tempObject.position.set(sample ? sample.x : 0, sample ? sample.y : 0, sample ? sample.z : 0);
+    tempObject.scale.setScalar(sample ? sample.scale : 0);
+    tempObject.updateMatrix();
+    mesh.setMatrixAt(slotIndex, tempObject.matrix);
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  function createInstancedMeshSet(samples, color, useImpostor) {
+    const capacity = Math.max(1, samples.length);
+
+    if (useImpostor) {
+      const geometry = new T.PlaneBufferGeometry(0.24, 0.24);
+      const mesh = new T.InstancedMesh(geometry, buildBillboardMaterial(color), capacity);
+      const positions = new Float32Array(capacity * 3);
+      const scales = new Float32Array(capacity);
+      const positionAttr = new T.InstancedBufferAttribute(positions, 3);
+      const scaleAttr = new T.InstancedBufferAttribute(scales, 1);
+      positionAttr.setUsage(T.DynamicDrawUsage);
+      scaleAttr.setUsage(T.DynamicDrawUsage);
+      mesh.geometry.setAttribute('instancePosition', positionAttr);
+      mesh.geometry.setAttribute('instanceScale', scaleAttr);
+      for (let i = 0; i < capacity; i += 1) {
+        setInstancedSlot(mesh, i, samples[i] || null, true);
+      }
+      mesh.userData = { isOrbital: true };
+      return mesh;
+    }
+
+    const geometry = new T.SphereGeometry(0.12, 6, 6);
+    const mesh = new T.InstancedMesh(geometry, buildInstancedMaterial(color), capacity);
+    mesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    for (let i = 0; i < capacity; i += 1) {
+      setInstancedSlot(mesh, i, samples[i] || null, false);
+    }
+    mesh.userData = { isOrbital: true };
+    return mesh;
+  }
+
+  function createInstancedOrbital(numPoints) {
+    const { n, l, m } = currentOrbitalData;
+    const positiveSamples = [];
+    const negativeSamples = [];
+
+    for (let i = 0; i < numPoints; i += 1) {
+      const sample = sampleOrbitalPoint(n, l, m);
+      if (sample.psi >= 0) positiveSamples.push(sample);
+      else negativeSamples.push(sample);
+    }
+
+    const useImpostor = impostorEnabled;
+    const positiveMesh = createInstancedMeshSet(positiveSamples, colorPositive, useImpostor);
+    const negativeMesh = createInstancedMeshSet(negativeSamples, colorNegative, useImpostor);
+    const group = new T.Group();
+    group.add(positiveMesh);
+    group.add(negativeMesh);
+    group.userData = {
+      isOrbital: true,
+      renderKind: 'instanced',
+      useImpostor,
+      posCapacity: positiveMesh.count,
+      negCapacity: negativeMesh.count,
+      lastConfig: { ...currentOrbitalData, numPoints },
+    };
+    return group;
+  }
+
+  function refreshInstancedOrbital(group, subsetFraction = 1) {
+    const { n, l, m } = currentOrbitalData;
+    const positiveMesh = group.children[0];
+    const negativeMesh = group.children[1];
+    const positiveUpdates = subsetFraction >= 1
+      ? group.userData.posCapacity
+      : Math.max(1, Math.floor(group.userData.posCapacity * subsetFraction));
+    const negativeUpdates = subsetFraction >= 1
+      ? group.userData.negCapacity
+      : Math.max(1, Math.floor(group.userData.negCapacity * subsetFraction));
+
+    for (let i = 0; i < positiveUpdates; i += 1) {
+      const slot = subsetFraction >= 1 ? i : ((Math.random() * group.userData.posCapacity) | 0);
+      const sample = sampleOrbitalPointWithSign(n, l, m, true);
+      setInstancedSlot(positiveMesh, slot, sample, group.userData.useImpostor);
+    }
+
+    for (let i = 0; i < negativeUpdates; i += 1) {
+      const slot = subsetFraction >= 1 ? i : ((Math.random() * group.userData.negCapacity) | 0);
+      const sample = sampleOrbitalPointWithSign(n, l, m, false);
+      setInstancedSlot(negativeMesh, slot, sample, group.userData.useImpostor);
+    }
+  }
+
+  function syncPointOrGpuUniforms(object) {
+    if (!object || !object.material?.uniforms) return;
+    const uniforms = object.material.uniforms;
+    const viewportHeight = renderer.getSize(sizeVec).y;
+    if (uniforms.uPixelRatio) uniforms.uPixelRatio.value = renderer.getPixelRatio();
+    if (uniforms.uViewportHeight) uniforms.uViewportHeight.value = viewportHeight;
+    if (uniforms.uFov) uniforms.uFov.value = camera.fov;
+  }
+
+  async function ensureWebGPUReady() {
+    const ok = await initWebGPU(webgpu, canvasContainer);
+    if (!ok) {
+      return false;
+    }
+    updateCanvasVisibility();
+    return true;
   }
 
   function regenerate() {
-    clearOrbital();
-    const { n, l, m } = currentOrbitalData; const numPoints = parseInt(densitySlider.value);
-    if (renderMode === 'webgpu') {
-      initWebGPU(webgpu, document.getElementById('canvas-container')).then(ok => { if (ok) { ensureWebGPUParticles(webgpu, n, l, m, numPoints); } updateModeButtonText(); });
+    if (!orbitalVisible) {
       return;
     }
+
+    syncRendererSize();
+    disposeCurrentOrbital();
+    currentMaxPsi2 = Math.max(estimateMaxPsi2(currentOrbitalData.n, currentOrbitalData.l, currentOrbitalData.m, 800), 1e-6);
+    const numPoints = getDensity();
+
+    if (renderMode === 'webgpu') {
+      ensureWebGPUReady().then((ok) => {
+        if (!ok) {
+          console.warn('WebGPU unavailable; falling back to Instanced mode.');
+          renderMode = 'instanced';
+          updateModeButtonText();
+          updateImpostorButtonState();
+          updateCanvasVisibility();
+          regenerate();
+          return;
+        }
+        ensureWebGPUParticles(webgpu, currentOrbitalData.n, currentOrbitalData.l, currentOrbitalData.m, numPoints);
+        renderCurrentFrame(false);
+      });
+      return;
+    }
+
     if (renderMode === 'gpu') {
-      const supports = renderer.capabilities.isWebGL2 && (renderer.extensions.get('EXT_color_buffer_float') || renderer.extensions.get('WEBGL_color_buffer_float'));
-      if (!supports) { renderMode = 'points'; updateModeButtonText(); }
-      else if (!gpuSupportLogged) { console.info('GPU sampling enabled (float render targets available)'); gpuSupportLogged = true; }
-      const rt = renderGPUSamples(renderer, { getRadial: LUT.getRadial, getAngular: LUT.getAngular }, { n, l, m, numPoints });
-      if (!rt) { renderMode = 'points'; updateModeButtonText(); return regenerate(); }
-      gpuRT = rt; gpuPoints = createGPUPointsMesh(rt, T, occlusionEnabled); gpuPoints.userData= { isOrbital: true }; scene.add(gpuPoints); currentOrbital = gpuPoints; return;
+      if (!supportsGpuSampling()) {
+        console.warn('Float render targets unavailable; falling back to Points mode.');
+        renderMode = 'points';
+        updateModeButtonText();
+        updateImpostorButtonState();
+        updateCanvasVisibility();
+        regenerate();
+        return;
+      }
+
+      if (!gpuSupportLogged) {
+        console.info('GPU sampling enabled (float render targets available)');
+        gpuSupportLogged = true;
+      }
+
+      gpuRT = renderGPUSamples(renderer, LUT, {
+        n: currentOrbitalData.n,
+        l: currentOrbitalData.l,
+        m: currentOrbitalData.m,
+        numPoints,
+      });
+
+      if (!gpuRT) {
+        console.warn('GPU sampling failed; falling back to Points mode.');
+        renderMode = 'points';
+        updateModeButtonText();
+        updateImpostorButtonState();
+        updateCanvasVisibility();
+        regenerate();
+        return;
+      }
+
+      gpuPoints = createGPUPointsMesh(gpuRT, T, occlusionEnabled, numPoints);
+      gpuPoints.userData = {
+        isOrbital: true,
+        renderKind: 'gpu',
+        numPoints,
+        lastConfig: { ...currentOrbitalData, numPoints },
+      };
+      currentOrbital = gpuPoints;
+      syncPointOrGpuUniforms(currentOrbital);
+      scene.add(currentOrbital);
+      return;
+    }
+
+    if (renderMode === 'points') {
+      currentOrbital = createPointsObject(numPoints);
+      scene.add(currentOrbital);
+      return;
+    }
+
+    currentOrbital = createInstancedOrbital(numPoints);
+    scene.add(currentOrbital);
+  }
+
+  function resampleGpu() {
+    if (!currentOrbital || currentOrbital.userData.renderKind !== 'gpu') return;
+    const numPoints = currentOrbital.userData.numPoints;
+    const nextRT = renderGPUSamples(renderer, LUT, {
+      n: currentOrbitalData.n,
+      l: currentOrbitalData.l,
+      m: currentOrbitalData.m,
+      numPoints,
+    });
+
+    if (!nextRT) {
+      console.warn('GPU sampling failed during resample; falling back to Points mode.');
+      renderMode = 'points';
+      updateModeButtonText();
+      updateImpostorButtonState();
+      updateCanvasVisibility();
+      regenerate();
+      return;
+    }
+
+    const previousRT = gpuRT;
+    gpuRT = nextRT;
+    currentOrbital.material.uniforms.uSamples.value = nextRT.texture;
+    previousRT?.dispose?.();
+  }
+
+  function resamplePoints() {
+    if (!currentOrbital || currentOrbital.userData.renderKind !== 'points') return;
+    const subsetFraction = adaptiveEnabled ? sampling.SUBSET_RESAMPLE_FRACTION : 1;
+    fillPointGeometry(currentOrbital.geometry, currentOrbital.userData.numPoints, subsetFraction);
+  }
+
+  function resampleInstanced() {
+    if (!currentOrbital || currentOrbital.userData.renderKind !== 'instanced') return;
+    refreshInstancedOrbital(currentOrbital, adaptiveEnabled ? sampling.SUBSET_RESAMPLE_FRACTION : 1);
+  }
+
+  function resampleCurrentOrbital() {
+    if (!orbitalVisible) return;
+    if (renderMode === 'gpu') {
+      resampleGpu();
+      return;
     }
     if (renderMode === 'points') {
-      const geom = new T.BufferGeometry(); const posArr = new Float32Array(numPoints*3); const colArr = new Float32Array(numPoints*3);
-      geom.setAttribute('position', new T.BufferAttribute(posArr,3)); geom.setAttribute('color', new T.BufferAttribute(colArr,3));
-      const mat = new T.PointsMaterial({ size:0.08, vertexColors:true, transparent:true, opacity:0.7, blending:T.AdditiveBlending, depthWrite:!occlusionEnabled, depthTest:occlusionEnabled });
-      const points = new T.Points(geom, mat); points.userData={ isOrbital:true }; scene.add(points); currentOrbital = points;
-      // Fill using importance sampling (more efficient and accurate than rejection sampling)
-      const { invCdf: radialInvCdf } = LUT.getRadial(n, l);
-      const { invThetaData, invPhiData, thetaSize, phiSize } = LUT.getAngular(l, m);
-      const radialArray = radialInvCdf._cpuArray;
-      const radialSize = radialInvCdf.image.width;
-      
-      for (let i = 0; i < numPoints; i++) {
-        // Importance sampling using inverse CDFs
-        const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-        
-        // Sample radius from radial inverse CDF
-        const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-        const rNorm = radialArray[rIdx * 4]; // normalized r in [0,1]
-        const r = rNorm * maxRadius;
-        
-        // Sample theta from angular inverse CDF
-        const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-        const thetaNorm = invThetaData[thetaIdx * 4]; // normalized theta in [0,1]
-        const theta = thetaNorm * Math.PI;
-        
-        // Sample phi from conditional phi inverse CDF (given theta)
-        const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-        const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-        const phiNorm = invPhiData[phiDataIdx]; // normalized phi in [0,1]
-        const phi = phiNorm * 2 * Math.PI;
-        
-        // Convert to Cartesian coordinates
-        const sinTheta = Math.sin(theta);
-        const cosTheta = Math.cos(theta);
-        const cosPhi = Math.cos(phi);
-        const sinPhi = Math.sin(phi);
-        const x = r * sinTheta * cosPhi;
-        const y = r * sinTheta * sinPhi;
-        const z = r * cosTheta;
-        
-        // Get wave function value for color
-        const psi = getWaveFunctionValue(n, l, m, r, theta, phi);
-        const c = psi >= 0 ? colorPositive : colorNegative;
-        
-        // Store position and color
-        const idx = i * 3;
-        posArr[idx] = x; posArr[idx+1] = y; posArr[idx+2] = z;
-        colArr[idx] = c.r; colArr[idx+1] = c.g; colArr[idx+2] = c.b;
-      }
-      geom.getAttribute('position').needsUpdate=true; geom.getAttribute('color').needsUpdate=true; return;
+      resamplePoints();
+      return;
     }
     if (renderMode === 'instanced') {
-      const sphereGeo = new T.SphereGeometry(0.12, 6, 6);
-      const matPos = new T.MeshBasicMaterial({ color: colorPositive, transparent:true, opacity:0.5, blending:T.AdditiveBlending, depthWrite:!occlusionEnabled, depthTest:occlusionEnabled });
-      const matNeg = new T.MeshBasicMaterial({ color: colorNegative, transparent:true, opacity:0.5, blending:T.AdditiveBlending, depthWrite:!occlusionEnabled, depthTest:occlusionEnabled });
-      const transformsPos=[]; const transformsNeg=[];
-      
-      // Use importance sampling instead of rejection sampling for instanced mode
-      const { invCdf: radialInvCdf } = LUT.getRadial(n, l);
-      const { invThetaData, invPhiData, thetaSize, phiSize } = LUT.getAngular(l, m);
-      const radialArray = radialInvCdf._cpuArray;
-      const radialSize = radialInvCdf.image.width;
-      
-      for (let i = 0; i < numPoints; i++) {
-        const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-        
-        const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-        const rNorm = radialArray[rIdx * 4];
-        const r = rNorm * maxRadius;
-        
-        const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-        const thetaNorm = invThetaData[thetaIdx * 4];
-        const theta = thetaNorm * Math.PI;
-        
-        const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-        const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-        const phiNorm = invPhiData[phiDataIdx];
-        const phi = phiNorm * 2 * Math.PI;
-        
-        const sinTheta = Math.sin(theta);
-        const x = r * sinTheta * Math.cos(phi);
-        const y = r * sinTheta * Math.sin(phi);
-        const z = r * Math.cos(theta);
-        
-        const psi = getWaveFunctionValue(n,l,m,r,theta,phi);
-        const psi2 = psi * psi;
-        
-        // Scale based on amplitude for visual variety (scientific accuracy maintained through sampling)
-        const scale = 0.55 + 0.45 * Math.min(1, Math.sqrt(psi2 / 1e-6)); // normalized scale
-        const t = {x, y, z, scale};
-        
-        if (psi >= 0) transformsPos.push(t);
-        else transformsNeg.push(t);
-      }
-      
-      const posMesh = new T.InstancedMesh(sphereGeo, matPos, Math.max(1, transformsPos.length));
-      const negMesh = new T.InstancedMesh(sphereGeo, matNeg, Math.max(1, transformsNeg.length));
-      const dummy = new T.Object3D(); transformsPos.forEach((t,i)=>{ dummy.position.set(t.x,t.y,t.z); dummy.scale.setScalar(t.scale); dummy.updateMatrix(); posMesh.setMatrixAt(i, dummy.matrix); });
-      transformsNeg.forEach((t,i)=>{ dummy.position.set(t.x,t.y,t.z); dummy.scale.setScalar(t.scale); dummy.updateMatrix(); negMesh.setMatrixAt(i, dummy.matrix); });
-      posMesh.userData={isOrbital:true}; negMesh.userData={isOrbital:true}; const group=new T.Group(); group.add(posMesh); group.add(negMesh); group.userData={isOrbital:true}; scene.add(group); currentOrbital=group;
-      return;
+      resampleInstanced();
     }
   }
 
-  function resample() {
-    if (renderMode === 'webgpu') { renderWebGPUFrame(webgpu, camera, adaptiveFrame++); return; }
-    if (renderMode === 'gpu') {
-      const { n,l,m } = currentOrbitalData; const numPoints = parseInt(densitySlider.value);
-      const rt = renderGPUSamples(renderer, { getRadial: LUT.getRadial, getAngular: LUT.getAngular }, { n,l,m,numPoints }); if (!rt) { renderMode='points'; updateModeButtonText(); regenerate(); return; }
-      gpuRT?.dispose?.(); gpuRT = rt; if (gpuPoints) { gpuPoints.material.uniforms.uSamples.value = rt.texture; } else { gpuPoints = createGPUPointsMesh(rt, T, occlusionEnabled); gpuPoints.userData={isOrbital:true}; scene.add(gpuPoints); }
-      return;
-    }
-    if (renderMode === 'points') {
-      if (!currentOrbital || currentOrbital.type !== 'Points') return; const { n,l,m } = currentOrbitalData; const numPoints = currentOrbital.geometry.getAttribute('position').array.length/3;
-      if (!adaptiveEnabled) {
-        // Full refresh using importance sampling
-        const posArr = currentOrbital.geometry.getAttribute('position').array; const colArr = currentOrbital.geometry.getAttribute('color').array;
-        const { invCdf: radialInvCdf } = LUT.getRadial(n, l);
-        const { invThetaData, invPhiData, thetaSize, phiSize } = LUT.getAngular(l, m);
-        const radialArray = radialInvCdf._cpuArray;
-        const radialSize = radialInvCdf.image.width;
-        
-        for (let i = 0; i < numPoints; i++) {
-          const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-          
-          // Sample using importance sampling
-          const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-          const rNorm = radialArray[rIdx * 4];
-          const r = rNorm * maxRadius;
-          
-          const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-          const thetaNorm = invThetaData[thetaIdx * 4];
-          const theta = thetaNorm * Math.PI;
-          
-          const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-          const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-          const phiNorm = invPhiData[phiDataIdx];
-          const phi = phiNorm * 2 * Math.PI;
-          
-          const sinTheta = Math.sin(theta), cosTheta = Math.cos(theta);
-          const x = r * sinTheta * Math.cos(phi); const y = r * sinTheta * Math.sin(phi); const z = r * cosTheta;
-          const psi = getWaveFunctionValue(n,l,m,r,theta,phi);
-          const c = psi >= 0 ? colorPositive : colorNegative;
-          
-          const idx = i * 3;
-          posArr[idx] = x; posArr[idx+1] = y; posArr[idx+2] = z;
-          colArr[idx] = c.r; colArr[idx+1] = c.g; colArr[idx+2] = c.b;
-        }
-        currentOrbital.geometry.getAttribute('position').needsUpdate=true; currentOrbital.geometry.getAttribute('color').needsUpdate=true;
-      } else {
-        // Adaptive: subset update using importance sampling
-        const posArr = currentOrbital.geometry.getAttribute('position').array; const colArr = currentOrbital.geometry.getAttribute('color').array; 
-        const updates=Math.max(1, Math.floor(numPoints*sampling.SUBSET_RESAMPLE_FRACTION));
-        const { invCdf: radialInvCdf } = LUT.getRadial(n, l);
-        const { invThetaData, invPhiData, thetaSize, phiSize } = LUT.getAngular(l, m);
-        const radialArray = radialInvCdf._cpuArray;
-        const radialSize = radialInvCdf.image.width;
-        
-        for (let i=0; i<updates; i++){
-          const idx = (Math.random()*numPoints)|0;
-          const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
-          
-          const rIdx = Math.min(Math.floor(u1 * radialSize), radialSize - 1);
-          const rNorm = radialArray[rIdx * 4];
-          const r = rNorm * maxRadius;
-          
-          const thetaIdx = Math.min(Math.floor(u2 * thetaSize), thetaSize - 1);
-          const thetaNorm = invThetaData[thetaIdx * 4];
-          const theta = thetaNorm * Math.PI;
-          
-          const phiIdx = Math.min(Math.floor(u3 * phiSize), phiSize - 1);
-          const phiDataIdx = (thetaIdx * phiSize + phiIdx) * 4;
-          const phiNorm = invPhiData[phiDataIdx];
-          const phi = phiNorm * 2 * Math.PI;
-          
-          const sinTheta = Math.sin(theta); const x = r * sinTheta * Math.cos(phi); const y = r * sinTheta * Math.sin(phi); const z = r * Math.cos(theta);
-          const psi = getWaveFunctionValue(n,l,m,r,theta,phi);
-          const c = psi >= 0 ? colorPositive : colorNegative;
-          
-          const p = idx * 3;
-          posArr[p]=x; posArr[p+1]=y; posArr[p+2]=z;
-          colArr[p]=c.r; colArr[p+1]=c.g; colArr[p+2]=c.b;
-        }
-        currentOrbital.geometry.getAttribute('position').needsUpdate=true; currentOrbital.geometry.getAttribute('color').needsUpdate=true; adaptiveFrame++;
-      }
-      return;
-    }
-    if (renderMode === 'instanced') { /* keep static for now */ return; }
+  function triggerDownload(dataUrl, filename) {
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
   }
 
-  // UI wiring
-  buttons.forEach(btn => btn.addEventListener('click', (e) => {
-    buttons.forEach(b => b.classList.remove('active')); e.target.classList.add('active');
-    const o = e.target.dataset.orbital; const map = { '1s':[1,0,0],'2s':[2,0,0],'3s':[3,0,0], '2p_x':[2,1,1], '2p_y':[2,1,-1], '2p_z':[2,1,0], '3p_x':[3,1,1], '3p_y':[3,1,-1], '3p_z':[3,1,0], '3d_z2':[3,2,0], '3d_x2-y2':[3,2,2], '3d_xy':[3,2,-2], '3d_xz':[3,2,1], '3d_yz':[3,2,-1], '4s':[4,0,0], '4p_x':[4,1,1], '4p_y':[4,1,-1], '4p_z':[4,1,0], '4d_z2':[4,2,0], '4d_x2-y2':[4,2,2], '4d_xy':[4,2,-2], '4d_xz':[4,2,1], '4d_yz':[4,2,-1] };
-    const d = map[o]; if (d) { currentOrbitalData = { n:d[0], l:d[1], m:d[2] }; regenerate(); }
-  }));
-  densitySlider.addEventListener('input', (e)=>{ densityValueLabel.textContent = parseInt(e.target.value).toLocaleString(); });
-  densitySlider.addEventListener('change', ()=> regenerate());
-  pauseButton.addEventListener('click', ()=>{ paused=!paused; pauseButton.textContent = paused? 'Resume':'Pause'; });
-  adaptiveButton.addEventListener('click', ()=>{ adaptiveEnabled=!adaptiveEnabled; adaptiveButton.textContent = adaptiveEnabled? 'Adaptive On':'Adaptive Off'; });
-  modeButton.addEventListener('click', async()=>{
-    if (renderMode==='instanced') renderMode='points'; else if (renderMode==='points') renderMode='gpu'; else if (renderMode==='gpu') renderMode='webgpu'; else renderMode='instanced'; updateModeButtonText(); regenerate();
+  async function takeScreenshot(filename = 'orbital_screenshot.png') {
+    if (renderMode === 'webgpu' && webgpu.initialized) {
+      renderWebGPUFrame(webgpu, camera, adaptiveFrame, false);
+      await webgpu.device?.queue?.onSubmittedWorkDone?.();
+      triggerDownload(webgpu.canvas.toDataURL('image/png'), filename);
+      return;
+    }
+
+    const previousColor = renderer.getClearColor(new T.Color()).getHex();
+    const previousAlpha = renderer.getClearAlpha();
+    renderer.setClearColor(0x000000, 0);
+    renderer.render(scene, camera);
+    triggerDownload(renderer.domElement.toDataURL('image/png'), filename);
+    renderer.setClearColor(previousColor, previousAlpha);
+    renderCurrentFrame(false);
+  }
+
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - (Math.pow(-2 * t + 2, 3) / 2);
+  }
+
+  function startCameraTransition(targetPosition, targetLookAt, targetUp, duration = 650) {
+    cameraTween = {
+      startTime: performance.now(),
+      duration,
+      fromPosition: camera.position.clone(),
+      toPosition: targetPosition.clone(),
+      fromTarget: controls.target.clone(),
+      toTarget: targetLookAt.clone(),
+      fromUp: camera.up.clone(),
+      toUp: targetUp.clone(),
+    };
+    isCameraTransitioning = true;
+    controls.enabled = false;
+  }
+
+  function computeSnap(axis) {
+    const target = controls.target.clone();
+    const distance = camera.position.clone().sub(target).length() || 20;
+    const up = new T.Vector3(0, 1, 0);
+    const offset = new T.Vector3();
+
+    if (axis === 'x') {
+      offset.set(distance, 0, 0);
+    } else if (axis === 'y') {
+      offset.set(0, distance, 0);
+      up.set(0, 0, 1);
+    } else {
+      offset.set(0, 0, distance);
+    }
+
+    return {
+      position: target.clone().add(offset),
+      target,
+      up,
+    };
+  }
+
+  function snapTo(axis) {
+    const snap = computeSnap(axis);
+    startCameraTransition(snap.position, snap.target, snap.up);
+  }
+
+  function resetOrientation() {
+    startCameraTransition(initialCameraPosition, initialTarget, initialUp);
+  }
+
+  function updateCameraTransition(now) {
+    if (!isCameraTransitioning || !cameraTween) return;
+
+    const progress = Math.min(1, (now - cameraTween.startTime) / cameraTween.duration);
+    const eased = easeInOutCubic(progress);
+
+    camera.position.copy(cameraTween.fromPosition.clone().lerp(cameraTween.toPosition, eased));
+    controls.target.copy(cameraTween.fromTarget.clone().lerp(cameraTween.toTarget, eased));
+    camera.up.copy(cameraTween.fromUp.clone().lerp(cameraTween.toUp, eased).normalize());
+    camera.lookAt(controls.target);
+
+    if (progress >= 1) {
+      controls.enabled = true;
+      isCameraTransitioning = false;
+      cameraTween = null;
+    }
+  }
+
+  function renderCurrentFrame(shouldComputeWebGPU) {
+    if (renderMode === 'webgpu' && webgpu.initialized) {
+      renderWebGPUFrame(webgpu, camera, adaptiveFrame, shouldComputeWebGPU && orbitalVisible);
+      if (shouldComputeWebGPU && orbitalVisible) adaptiveFrame += 1;
+    } else {
+      renderer.render(scene, camera);
+    }
+
+    axesRoot.quaternion.copy(camera.quaternion);
+    orientationRenderer.render(orientationScene, orientationCamera);
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const now = performance.now();
+
+    updateCameraTransition(now);
+    controls.update();
+
+    if (!paused) {
+      resampleCurrentOrbital();
+    }
+
+    renderCurrentFrame(!paused);
+
+    fpsFrames += 1;
+    if (now - prevFpsTime >= 1000) {
+      fpsCounter.textContent = `FPS: ${fpsFrames}`;
+      fpsFrames = 0;
+      prevFpsTime = now;
+    }
+  }
+
+  buttons.forEach((button) => {
+    button.addEventListener('click', () => selectOrbital(button));
   });
-  cullButton.addEventListener('click', ()=>{ occlusionEnabled=!occlusionEnabled; cullButton.textContent = occlusionEnabled? 'Cull: On':'Cull: Off'; regenerate(); });
-  clearButton.addEventListener('click', ()=> clearOrbital());
-  screenshotButton.addEventListener('click', ()=>{ const prevColor = renderer.getClearColor(new T.Color()).getHex(); const prevAlpha = renderer.getClearAlpha(); renderer.setClearColor(0x000000,0); renderer.render(scene,camera); const dataURL=renderer.domElement.toDataURL('image/png'); renderer.setClearColor(prevColor, prevAlpha); const a=document.createElement('a'); a.href=dataURL; a.download='orbital_screenshot.png'; document.body.appendChild(a); a.click(); a.remove(); });
 
-  // Resize
-  let resizeTimer=null; window.addEventListener('resize', ()=>{ clearTimeout(resizeTimer); resizeTimer=setTimeout(()=>{ const w=window.innerWidth, h=window.innerHeight; camera.aspect=w/h; camera.updateProjectionMatrix(); renderer.setSize(w,h); }, 120); });
+  densitySlider.addEventListener('input', () => {
+    updateDensityLabel();
+    syncRendererSize();
+    if (orbitalVisible) scheduleRegenerate(120);
+  });
 
-  // Animate
-  let prevTime = performance.now(); let frames=0;
-  function animate(){ requestAnimationFrame(animate); if (!paused) resample(); controls.update(); if (renderMode!=='webgpu') renderer.render(scene, camera); const now=performance.now(); frames++; if (now - prevTime >= 1000){ fpsCounter.textContent = `FPS: ${frames}`; prevTime=now; frames=0; } }
+  pauseButton.addEventListener('click', () => {
+    paused = !paused;
+    updatePauseButtonText();
+  });
 
-  // Init UI
-  document.querySelector('[data-orbital="1s"]').classList.add('active');
+  adaptiveButton.addEventListener('click', () => {
+    adaptiveEnabled = !adaptiveEnabled;
+    adaptiveFrame = 0;
+    updateAdaptiveButtonText();
+  });
+
+  modeButton.addEventListener('click', async () => {
+    if (renderMode === 'instanced') renderMode = 'points';
+    else if (renderMode === 'points') renderMode = 'gpu';
+    else if (renderMode === 'gpu') renderMode = 'webgpu';
+    else renderMode = 'instanced';
+
+    if (renderMode === 'webgpu') {
+      const ok = await ensureWebGPUReady();
+      if (!ok) {
+        console.warn('WebGPU unavailable; skipping to Instanced mode.');
+        renderMode = 'instanced';
+      }
+    }
+
+    updateModeButtonText();
+    updateImpostorButtonState();
+    updateCanvasVisibility();
+
+    if (orbitalVisible) regenerate();
+    else renderCurrentFrame(false);
+  });
+
+  cullButton.addEventListener('click', () => {
+    occlusionEnabled = !occlusionEnabled;
+    updateCullButtonText();
+    if (orbitalVisible) regenerate();
+  });
+
+  impostorButton.addEventListener('click', () => {
+    if (renderMode !== 'instanced') return;
+    impostorEnabled = !impostorEnabled;
+    updateImpostorButtonState();
+    if (orbitalVisible) regenerate();
+  });
+
+  clearButton.addEventListener('click', clearOrbitalSelection);
+  screenshotButton.addEventListener('click', () => { void takeScreenshot(); });
+  snapXButton.addEventListener('click', () => snapTo('x'));
+  snapYButton.addEventListener('click', () => snapTo('y'));
+  snapZButton.addEventListener('click', () => snapTo('z'));
+  resetOrientButton.addEventListener('click', resetOrientation);
+
+  window.addEventListener('resize', () => {
+    if (resizeTimer) window.clearTimeout(resizeTimer);
+    resizeTimer = window.setTimeout(() => {
+      resizeTimer = null;
+      syncRendererSize();
+      renderCurrentFrame(false);
+    }, 120);
+  });
+
+  buttons[0].classList.add('active');
+  updateDensityLabel();
+  updatePauseButtonText();
+  updateAdaptiveButtonText();
   updateModeButtonText();
-  regenerate(); animate();
-});
+  updateCullButtonText();
+  updateImpostorButtonState();
+  updateCanvasVisibility();
+  syncRendererSize();
+  regenerate();
+  animate();
+}
 
+function buildThickAxes(T3, length = 1.35, radius = 0.07, headLength = 0.28, headRadius = 0.14) {
+  const group = new T3.Group();
+  const segments = 16;
+
+  function makeAxis(color, axis) {
+    const shaftLength = Math.max(0.001, length - headLength);
+    const material = new T3.MeshBasicMaterial({ color, toneMapped: false });
+    const shaft = new T3.Mesh(new T3.CylinderGeometry(radius, radius, shaftLength, segments), material);
+    const head = new T3.Mesh(new T3.ConeGeometry(headRadius, headLength, segments), material);
+
+    if (axis === 'x') {
+      shaft.rotation.z = Math.PI / 2;
+      shaft.position.x = shaftLength / 2;
+      head.rotation.z = Math.PI / 2;
+      head.position.x = shaftLength + headLength / 2;
+    } else if (axis === 'y') {
+      shaft.position.y = shaftLength / 2;
+      head.position.y = shaftLength + headLength / 2;
+    } else {
+      shaft.rotation.x = -Math.PI / 2;
+      shaft.position.z = shaftLength / 2;
+      head.rotation.x = -Math.PI / 2;
+      head.position.z = shaftLength + headLength / 2;
+    }
+
+    const axisGroup = new T3.Group();
+    axisGroup.add(shaft);
+    axisGroup.add(head);
+    return axisGroup;
+  }
+
+  group.add(makeAxis(0xff5555, 'x'));
+  group.add(makeAxis(0x55ff55, 'y'));
+  group.add(makeAxis(0x5588ff, 'z'));
+  return group;
+}

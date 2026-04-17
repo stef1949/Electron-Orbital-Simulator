@@ -1,6 +1,5 @@
 const T = window.THREE;
 import { maxRadius, colors } from '../config.js';
-import { estimateMaxAngular2 } from '../math/wave.js';
 
 export function createGPUSampleTarget(renderer, numPoints) {
   const size = Math.ceil(Math.sqrt(numPoints));
@@ -119,11 +118,11 @@ export function renderGPUSamples(renderer, caches, params) {
   return rt;
 }
 
-export function createGPUPointsMesh(sampleTarget, THREERef, occlusionEnabled) {
-  const T3 = T;
+export function createGPUPointsMesh(sampleTarget, THREERef, occlusionEnabled, numPoints) {
+  const T3 = THREERef || T;
   const width = sampleTarget._texWidth, height = sampleTarget._texHeight;
   const geom = new T3.BufferGeometry();
-  const count = width * height;
+  const count = Math.min(numPoints ?? (width * height), width * height);
   const positions = new Float32Array(count * 3);
   const indices = new Float32Array(count);
   for (let i = 0; i < count; i++) indices[i] = i;

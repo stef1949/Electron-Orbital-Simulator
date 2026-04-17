@@ -24,7 +24,7 @@
   <img src="assets/orbital_screenshot.png" alt="Electron Orbital" width="420" />
 </p>
 
-Interactive, high‑performance visualiser for hydrogen‑like electron orbitals. Implements normalized hydrogenic radial functions and real spherical harmonics (up to d; math extended for f), mult[...]
+Interactive, high-performance visualiser for hydrogen-like electron orbitals. Implements normalized hydrogenic radial functions and real spherical harmonics, with browser-first rendering paths for CPU, WebGL, and WebGPU.
 
 ## Highlights
 - Physically motivated math: normalized hydrogenic radial R<sub>nl</sub>(r) with associated Laguerre recurrence, and real normalized Y<sub>lm</sub>(θ,φ) via associated Legendre (supports l ≤ 3 [...]
@@ -34,9 +34,8 @@ Interactive, high‑performance visualiser for hydrogen‑like electron orbitals
   - GPU (WebGL): render‑to‑texture sampling + shader point cloud.
   - WebGPU: compute shader sampling + render shader (Chrome/Edge).
 - Importance sampling: inverse CDF tables for |R|² r² and |Y|² sinθ; no rejection loops in Points mode.
-- Smooth X/Y/Z snaps with easing; orientation axes overlay (bottom‑left).
-- HDR/tone mapping toggle (ACES fit + sRGB), optional environment map.
-- Zoom‑aware point brightness so clouds stay legible when zooming.
+- Smooth X/Y/Z snaps with easing; orientation axes overlay (bottom-left).
+- Clear separation between the HTML shell (`index.html`) and the runtime controller (`src/main.js`) to avoid duplicate initialization paths.
 
 ## Requirements
 - Modern browser with WebGL2. GPU (WebGL) mode needs float color buffer support: `EXT_color_buffer_float` or `WEBGL_color_buffer_float`.
@@ -56,7 +55,6 @@ Opening `index.html` directly from disk also works for most features, but some G
   - Density: number of points (performance/quality).
   - Adaptive: incremental updates vs full refresh.
   - Mode: Instanced → Points → GPU (WebGL) → WebGPU.
-  - HDR: toggles tone mapping (ACES) on/off.
   - Cull: toggle depth testing/writing for point clouds.
   - Pause, Clear, Save PNG.
 - Orientation overlay (bottom‑left): mini axes + buttons X/Y/Z/Reset with smooth transitions.
@@ -70,21 +68,19 @@ Opening `index.html` directly from disk also works for most features, but some G
   - Renders samples into an RGBA32F target; point shader reads (x,y,z,ψ).
   - Requires WebGL2 + float render targets.
 - WebGPU:
-  - Compute pass samples via inverse CDFs; vertex scales points by |ψ| and zoom; fragment does optional ACES + sRGB.
+  - Compute pass samples via inverse CDFs; point sprites are rendered directly from the generated particle buffer.
 
 ## Accuracy Notes
 - Radial functions use normalized hydrogenic forms in atomic units, computed via a stable Laguerre recurrence.
 - Real spherical harmonics are normalized; sampling tables use |Y|² sinθ and |R|² r² to draw from |ψ|² directly.
 
 ## Tuning
-- Point size: edit defaults in `index.html` (search `uPointSize` and `webgpu.uniforms.pointSize`).
-- Brightness: adjust `uBrightnessGamma` (points/GPU shaders) or the ACES toggle (HDR button). Exposure can be added easily if needed.
+- Point size: edit `uPointSize` in [src/main.js](src/main.js) and [src/gpu/webglSampler.js](src/gpu/webglSampler.js), plus the WebGPU point size constant in [src/gpu/webgpuPipeline.js](src/gpu/webgpuPipeline.js).
 - Performance: lower Density, use Points or GPU mode; WebGPU is fastest if available.
 
 ## Troubleshooting
 - “GPU mode fell back to Points”: your GPU/driver likely lacks float color buffer support; use Points/WebGPU.
 - WebGPU unavailable: ensure your browser version supports WebGPU and it’s enabled; the app will fall back to other modes.
-- Tailwind CDN error: the app pins Tailwind Play CDN to a stable version to avoid runtime issues.
 
 ## Tests
 - Run unit tests: `npm test`
